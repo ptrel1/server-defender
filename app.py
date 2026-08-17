@@ -158,6 +158,7 @@ tr:hover td{background:var(--bg-hover)}
   <div class="stat-card blocked"><div class="num" id="stat-frps-total">-</div><div class="label">🏆 frps 累计封禁</div></div>
   <div class="stat-card blocked"><div class="num" id="stat-iptables">-</div><div class="label">🛡️ iptables 屏蔽</div></div>
   <div class="stat-card syn"><div class="num" id="stat-syn">-</div><div class="label">💣 SYN Flood 告警</div></div>
+  <div class="stat-card banned"><div class="num" id="stat-unames">-</div><div class="label">🔐 用户名风暴永久封禁</div><div class="badge-wrapper">!</div></div>
 </div>
 
 <div class="grid">
@@ -169,6 +170,7 @@ tr:hover td{background:var(--bg-hover)}
   <div class="card"><h2>📜 最近攻击记录</h2><div id="recent-attacks"><div class="empty">加载中...</div></div></div>
   <div class="card"><h2>🔍 frps 端口扫描 TOP IP</h2><div id="frps-scan"><div class="empty">加载中...</div></div></div>
   <div class="card"><h2>💣 SYN Flood 历史</h2><div id="syn-history"><div class="empty">加载中...</div></div></div>
+  <div class="card"><h2>🔐 用户名风暴永久封禁 <span class="badge" id="unames-badge">0</span></h2><div id="unames-list"><div class="empty">✅ 暂无</div></div></div>
 </div>
 
 <div class="footer">
@@ -305,7 +307,7 @@ function setTheme(name) { applyTheme(name); }
 
 // === Data refresh ===
 let autoTimer = null;
-async function refresh(){try{const r=await fetch('/api/data');const d=await r.json();document.getElementById('stat-attack').textContent=d.total_attacks;document.getElementById('stat-banned').textContent=d.f2b_banned_count;document.getElementById('stat-total-banned').textContent=d.f2b_total_banned;document.getElementById('stat-iptables').textContent=d.iptables_blocked;document.getElementById('stat-frps-banned').textContent=d.frps_f2b_banned_count;document.getElementById('stat-frps-total').textContent=d.frps_f2b_total_banned;document.getElementById('stat-syn').textContent=d.syn_count;document.getElementById('f2b-list').innerHTML=d.f2b_html;document.getElementById('f2b-badge').textContent=d.f2b_banned_count;document.getElementById('frps-f2b-list').innerHTML=d.frps_f2b_html;document.getElementById('frps-f2b-badge').textContent=d.frps_f2b_banned_count;document.getElementById('iptables-list').innerHTML=d.iptables_html;document.getElementById('top-ips').innerHTML=d.top_ips_html;document.getElementById('top-users').innerHTML=d.top_users_html;document.getElementById('recent-attacks').innerHTML=d.recent_html;document.getElementById('syn-history').innerHTML=d.syn_html;document.getElementById('frps-scan').innerHTML=d.frps_scan_html;document.getElementById('update-info').textContent='最后更新: '+d.time}catch(e){console.error(e)}}
+async function refresh(){try{const r=await fetch('/api/data');const d=await r.json();document.getElementById('stat-attack').textContent=d.total_attacks;document.getElementById('stat-banned').textContent=d.f2b_banned_count;document.getElementById('stat-total-banned').textContent=d.f2b_total_banned;document.getElementById('stat-iptables').textContent=d.iptables_blocked;document.getElementById('stat-frps-banned').textContent=d.frps_f2b_banned_count;document.getElementById('stat-frps-total').textContent=d.frps_f2b_total_banned;document.getElementById('stat-syn').textContent=d.syn_count;document.getElementById('f2b-list').innerHTML=d.f2b_html;document.getElementById('f2b-badge').textContent=d.f2b_banned_count;document.getElementById('frps-f2b-list').innerHTML=d.frps_f2b_html;document.getElementById('frps-f2b-badge').textContent=d.frps_f2b_banned_count;document.getElementById('iptables-list').innerHTML=d.iptables_html;document.getElementById('top-ips').innerHTML=d.top_ips_html;document.getElementById('top-users').innerHTML=d.top_users_html;document.getElementById('recent-attacks').innerHTML=d.recent_html;document.getElementById('syn-history').innerHTML=d.syn_html;document.getElementById('frps-scan').innerHTML=d.frps_scan_html;document.getElementById('stat-unames').textContent=d.unames_count;document.getElementById('unames-badge').textContent=d.unames_count;document.getElementById('unames-list').innerHTML=d.unames_html;document.getElementById('update-info').textContent='最后更新: '+d.time}catch(e){console.error(e)}}
 function showBlockIP(){document.getElementById('block-modal').classList.add('show');document.getElementById('block-ip-input').focus()}
 function hideBlockIP(){document.getElementById('block-modal').classList.remove('show')}
 async function doBlockIP(){const ip=document.getElementById('block-ip-input').value.trim();if(!ip)return;try{await fetch('/api/block_ip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:ip})});document.getElementById('block-ip-input').value='';hideBlockIP();refresh()}catch(e){console.error(e)}}
@@ -479,6 +481,31 @@ def render_syn_html(entries):
         html += f"<tr><td class=\"time\">{e['time']}</td><td class=\"ip attack-row\">{e['port']}</td></tr>"
     return html + "</table>"
 
+# ===== 用户名风暴永久封禁(usernames.py 写入) =====
+UNAMES_BAN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "perm_ban.txt")
+
+def get_usernames_bans():
+    """读 usernames.py 生成的永久封禁列表: 每行 ip\t用户名数\t时间"""
+    bans = []
+    try:
+        with open(UNAMES_BAN_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line: continue
+                parts = line.split("\t")
+                bans.append({"ip": parts[0], "users": parts[1] if len(parts) > 1 else "-",
+                             "time": parts[2] if len(parts) > 2 else "-"})
+    except Exception:
+        pass
+    return bans
+
+def render_usernames_html(bans):
+    if not bans: return "<div class=\"empty\">✅ 暂无用户名风暴封禁</div>"
+    html = "<table><tr><th>#</th><th>IP</th><th>不同用户名</th><th>封禁时间</th></tr>"
+    for i, b in enumerate(bans, 1):
+        html += f"<tr><td>{i}</td><td class=\"ip attack-row\">{b['ip']}</td><td><span class=\"badge-cnt badge-high\">{b['users']}</span></td><td class=\"time\">{b['time']}</td></tr>"
+    return html + "</table>"
+
 @app.route("/")
 def index():
     return render_template_string(HTML)
@@ -490,6 +517,7 @@ def api_data():
     syn_entries = get_syn_flood()
     lastb = get_lastb_stats()
     frps_scan = get_frps_scan_stats()
+    unames_bans = get_usernames_bans()
     return jsonify({
         "total_attacks": lastb["total"],
         "f2b_banned_count": f2b["banned_count"],
@@ -508,6 +536,8 @@ def api_data():
         "syn_count": len(syn_entries),
         "syn_html": render_syn_html(syn_entries),
         "frps_scan_html": render_frps_scan_html(frps_scan),
+        "unames_count": len(unames_bans),
+        "unames_html": render_usernames_html(unames_bans),
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
 
