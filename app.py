@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
-"""SSH attack monitor dashboard"""
-import subprocess, re, json, os
+"""SSH attack monitor dashboard & Host Health Defender"""
+import subprocess, re, json, os, threading, time
 from datetime import datetime
 from flask import Flask, jsonify, render_template_string, request
 
+# 导入进程收割模块
+from reaper import inspect_and_reap, load_events, get_high_cpu_processes, kill_by_pid
+
 app = Flask(__name__)
+
+# 后台自动巡检守护线程
+def reaper_background_worker():
+    while True:
+        try:
+            inspect_and_reap()
+        except Exception as e:
+            print(f"[reaper_worker] error: {e}")
+        time.sleep(30)
 
 HTML = r"""<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🛡 SSH 攻击监控面板</title>
+<title>🛡️ Server Defender — 服务器安全与健康防御中心</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -75,6 +87,8 @@ body{
 .stat-card.blocked .num{color:var(--info)}.stat-card.blocked .label{color:#87ceeb}
 .stat-card.syn{background:linear-gradient(135deg,#2d004a,#4a006b);border-color:var(--warn)}
 .stat-card.syn .num{color:var(--warn)}.stat-card.syn .label{color:#dda0dd}
+.stat-card.reaper{background:linear-gradient(135deg,#3d2000,#5c3000);border-color:#ff8c00}
+.stat-card.reaper .num{color:#ffa500}.stat-card.reaper .label{color:#ffd700}
 .stat-card .badge-wrapper{position:absolute;top:-8px;right:-8px;background:var(--accent);color:#fff;border-radius:50%;width:28px;height:28px;line-height:28px;font-size:13px;font-weight:bold;box-shadow:0 2px 8px rgba(255,69,0,0.4)}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:14px;z-index:1;position:relative}
@@ -106,6 +120,13 @@ tr:hover td{background:var(--bg-hover)}
 .badge-mid{background:linear-gradient(135deg,#8b4500,#daa520);color:#fff}
 .badge-low{background:linear-gradient(135deg,#1a4a00,#3d6b00);color:#adff2f}
 .empty{color:var(--border);font-size:13px;padding:16px 0;text-align:center;font-style:italic}
+
+.btn-kill{
+  background:linear-gradient(135deg,#8b0000,#cc0000);
+  color:#fff; border:1px solid #ff4500; border-radius:4px;
+  padding:2px 8px; font-size:11px; cursor:pointer; font-weight:bold; transition:all 0.2s
+}
+.btn-kill:hover{background:#ff4500;box-shadow:0 0 10px rgba(255,69,0,0.6)}
 
 .footer{color:var(--border);font-size:12px;margin-top:14px;display:flex;justify-content:space-between;align-items:center;z-index:1;position:relative}
 .footer button{
@@ -146,8 +167,8 @@ tr:hover td{background:var(--bg-hover)}
 </div>
 
 <div class="hero-banner">
-  <h1>🛡️ SSH 攻击监控</h1>
-  <div class="subtitle">SSH 攻击监控面板 &nbsp;|&nbsp; <span id="update-info">加载中...</span></div>
+  <h1>🛡️ SSH 攻击与主机健康防御</h1>
+  <div class="subtitle">全功能服务器卫士 &nbsp;|&nbsp; <span id="update-info">加载中...</span></div>
 </div>
 
 <div class="top-stats">
@@ -158,7 +179,8 @@ tr:hover td{background:var(--bg-hover)}
   <div class="stat-card blocked"><div class="num" id="stat-frps-total">-</div><div class="label">🏆 frps 累计封禁</div></div>
   <div class="stat-card blocked"><div class="num" id="stat-iptables">-</div><div class="label">🛡️ iptables 屏蔽</div></div>
   <div class="stat-card syn"><div class="num" id="stat-syn">-</div><div class="label">💣 SYN Flood 告警</div></div>
-  <div class="stat-card banned"><div class="num" id="stat-unames">-</div><div class="label">🔐 用户名风暴永久封禁</div><div class="badge-wrapper">!</div></div>
+  <div class="stat-card banned"><div class="num" id="stat-unames">-</div><div class="label">🔐 用户名风暴封禁</div><div class="badge-wrapper">!</div></div>
+  <div class="stat-card reaper"><div class="num" id="stat-reaper">-</div><div class="label">⚡ 自动自愈收割</div><div class="badge-wrapper">!</div></div>
 </div>
 
 <div class="grid">
@@ -167,33 +189,31 @@ tr:hover td{background:var(--bg-hover)}
   <div class="card"><h2>🚧 iptables 手动屏蔽</h2><div id="iptables-list"><div class="empty">加载中...</div></div></div>
   <div class="card"><h2>🏅 攻击 IP 排行</h2><div id="top-ips"><div class="empty">加载中...</div></div></div>
   <div class="card"><h2>🎯 被尝试账号排行</h2><div id="top-users"><div class="empty">加载中...</div></div></div>
-  <div class="card"><h2>📜 最近攻击记录</h2><div id="recent-attacks"><div class="empty">加载中...</div></div></div>
-  <div class="card"><h2>🔍 frps 端口扫描 TOP IP</h2><div id="frps-scan"><div class="empty">加载中...</div></div></div>
-  <div class="card"><h2>💣 SYN Flood 历史</h2><div id="syn-history"><div class="empty">加载中...</div></div></div>
-  <div class="card"><h2>🔐 用户名风暴永久封禁 <span class="badge" id="unames-badge">0</span></h2><div id="unames-list"><div class="empty">✅ 暂无</div></div></div>
+  <div class="card"><h2>🔥 实时高 CPU 进程监控</h2><div id="top-procs"><div class="empty">加载中...</div></div></div>
+  <div class="card"><h2>⚡ 异常失控进程收割战报 <span class="badge" id="reaper-badge">0</span></h2><div id="reaper-events"><div class="empty">✅ 系统平稳，暂无失控进程</div></div></div>
+  <div class="card"><h2>🔐 用户名风暴永久封禁 <span class="badge" id="unames-badge">0</span></h2><div id="unames-list"><div class="empty">✅ 暂无封禁</div></div></div>
+  <div class="card"><h2>📊 frps 端口扫描 TOP IP</h2><div id="frps-scan"><div class="empty">⏳ 分析中...</div></div></div>
+  <div class="card"><h2>💣 SYN Flood 告警历史</h2><div id="syn-history"><div class="empty">✅ 未检测到攻击</div></div></div>
+  <div class="card"><h2>🕒 最近攻击记录</h2><div id="recent-attacks"><div class="empty">加载中...</div></div></div>
 </div>
 
 <div class="footer">
-  <span id="footer-msg">⏱ 每 5 秒自动刷新</span>
-  <div>
-    <button onclick="showBlockIP()">⚔️ 封禁 IP</button>
-    <button onclick="refresh()">🔄 刷新</button>
-  </div>
+  <span>🛡️ Server Defender 安全与主机健康防护</span>
+  <button onclick="showBlockIP()">🚧 手动屏蔽 IP</button>
 </div>
 
 <div class="modal" id="block-modal">
   <div class="modal-box">
-    <h3>⚔️ 封禁 IP</h3>
-    <input type="text" id="block-ip-input" placeholder="输入 IP，如 1.2.3.4">
+    <h3>🚧 手动屏蔽恶意 IP</h3>
+    <input type="text" id="block-ip-input" placeholder="输入要屏蔽的 IP 地址 (如 1.2.3.4)" />
     <div class="btn-group">
       <button class="btn-cancel" onclick="hideBlockIP()">取消</button>
-      <button class="btn-primary" onclick="doBlockIP()">确认封禁</button>
+      <button class="btn-primary" onclick="doBlockIP()">确认屏蔽</button>
     </div>
   </div>
 </div>
 
 <script>
-// === 主题系统 ===
 const THEMES = {
   red: {
     label:'🏮 经典红',
@@ -208,52 +228,52 @@ const THEMES = {
     badgeBg:'#8b0000',badgeText:'#ffd700',badgeBorder:'#ff4500',
     badgeHighBg:'#cc0000',badgeHighEnd:'#ff4500',badgeHighBorder:'#ffd700',
     bgHover:'rgba(255,69,0,0.1)',
-    hero:'🛡️ SSH 攻击监控',subtitle:'SSH 攻击监控面板',footer:'⏱ 每 5 秒自动刷新'
+    hero:'🛡️ SSH 攻击与主机健康防御',subtitle:'全功能服务器卫士',footer:'🛡️ 实时安全防护中'
   },
   hacker: {
     label:'💀 黑客终端',
-    bg:'#000000',bg2:'#0a0a0a',bgCard:'#0d0d0d',bgCardEnd:'#0a0a0a',
-    text:'#00ff41',text2:'#00cc33',text3:'#009922',
+    bg:'#0a0e0a',bg2:'#0d140d',bgCard:'#0a0e0a',bgCardEnd:'#0d140d',
+    text:'#00ff41',text2:'#80ff80',text3:'#40aa40',
     accent:'#00ff41',accent2:'#003300',accentGlow:'rgba(0,255,65,0.2)',
-    border:'#003300',borderHover:'#00ff41',
-    danger:'#ff0040',success:'#00ff41',warn:'#ffcc00',info:'#00ccff',
-    bannerStart:'#001a00',bannerMid:'#003300',bannerEnd:'#001a00',
+    border:'#00ff41',borderHover:'#00ff41',
+    danger:'#ff3333',success:'#00ff41',warn:'#ffff00',info:'#00bfff',
+    bannerStart:'#002200',bannerMid:'#004400',bannerEnd:'#002200',
     heroText:'#00ff41',heroGlow:'#00ff41',
-    statAttackBg:'#002200',statAttackEnd:'#004400',
+    statAttackBg:'#1a0000',statAttackEnd:'#2d0000',
     badgeBg:'#003300',badgeText:'#00ff41',badgeBorder:'#00ff41',
-    badgeHighBg:'#00cc00',badgeHighEnd:'#00ff41',badgeHighBorder:'#00ff41',
+    badgeHighBg:'#006600',badgeHighEnd:'#00ff41',badgeHighBorder:'#00ff41',
     bgHover:'rgba(0,255,65,0.08)',
-    hero:'💀 TERMINAL',subtitle:'SSH INTRUSION DETECTION SYSTEM',footer:'⏱ AUTO-REFRESH 5s'
+    hero:'💀 DEFENDER TERMINAL',subtitle:'系统底层安全防护终端',footer:'💀 终端监控已接入'
   },
   dark: {
     label:'🌙 暗夜战报',
-    bg:'#0d1117',bg2:'#161b22',bgCard:'#161b22',bgCardEnd:'#161b22',
-    text:'#c9d1d9',text2:'#8b949e',text3:'#484f58',
-    accent:'#58a6ff',accent2:'#1f6feb',accentGlow:'rgba(88,166,255,0.1)',
+    bg:'#0d1117',bg2:'#161b22',bgCard:'#0d1117',bgCardEnd:'#161b22',
+    text:'#c9d1d9',text2:'#8b949e',text3:'#58a6ff',
+    accent:'#58a6ff',accent2:'#1f6feb',accentGlow:'rgba(88,166,255,0.2)',
     border:'#30363d',borderHover:'#58a6ff',
-    danger:'#f85149',success:'#3fb950',warn:'#d2991d',info:'#58a6ff',
-    bannerStart:'#161b22',bannerMid:'#1c2128',bannerEnd:'#161b22',
+    danger:'#f85149',success:'#3fb950',warn:'#d29922',info:'#58a6ff',
+    bannerStart:'#161b22',bannerMid:'#21262d',bannerEnd:'#161b22',
     heroText:'#58a6ff',heroGlow:'#58a6ff',
-    statAttackBg:'#161b22',statAttackEnd:'#1c2128',
-    badgeBg:'#21262d',badgeText:'#c9d1d9',badgeBorder:'#30363d',
-    badgeHighBg:'#d73a49',badgeHighEnd:'#d73a49',badgeHighBorder:'#f85149',
-    bgHover:'rgba(88,166,255,0.06)',
-    hero:'🛡️ 战报',subtitle:'SSH 攻击监控面板',footer:'⏱ 每 5 秒自动刷新'
+    statAttackBg:'#21262d',statAttackEnd:'#30363d',
+    badgeBg:'#21262d',badgeText:'#58a6ff',badgeBorder:'#30363d',
+    badgeHighBg:'#1f6feb',badgeHighEnd:'#58a6ff',badgeHighBorder:'#58a6ff',
+    bgHover:'rgba(88,166,255,0.08)',
+    hero:'🌙 SERVER WATCHDOG',subtitle:'主机安全战报中心',footer:'🌙 暗夜守护运行中'
   },
   warn: {
     label:'🚨 警示警戒',
     bg:'#1a1a00',bg2:'#2d2d00',bgCard:'#1a1a00',bgCardEnd:'#2d2d00',
-    text:'#ffd700',text2:'#ffeb00',text3:'#ccaa00',
+    text:'#ffeb3b',text2:'#fff59d',text3:'#fbc02d',
     accent:'#ff4444',accent2:'#cc0000',accentGlow:'rgba(255,68,68,0.2)',
-    border:'#ff4444',borderHover:'#ffd700',
-    danger:'#ff0000',success:'#00ff00',warn:'#ffff00',info:'#ff8800',
+    border:'#ff4444',borderHover:'#ffeb3b',
+    danger:'#ff4444',success:'#00e676',warn:'#ff9100',info:'#40c4ff',
     bannerStart:'#1a1a00',bannerMid:'#ff4444',bannerEnd:'#1a1a00',
     heroText:'#ffd700',heroGlow:'#ff4444',
     statAttackBg:'#4a1a00',statAttackEnd:'#6b2a00',
     badgeBg:'#8b0000',badgeText:'#ffd700',badgeBorder:'#ff4444',
     badgeHighBg:'#cc0000',badgeHighEnd:'#ff4444',badgeHighBorder:'#ffd700',
     bgHover:'rgba(255,68,68,0.08)',
-    hero:'🚨 ALERT',subtitle:'⚠️ 入侵警报系统',footer:'🚨 紧急通报中'
+    hero:'🚨 ALERT DEFENDER',subtitle:'⚠️ 入侵与资源警戒系统',footer:'🚨 紧急通报中'
   },
   cyber: {
     label:'🔵 蓝焰科技',
@@ -268,7 +288,7 @@ const THEMES = {
     badgeBg:'#1e90ff',badgeText:'#fff',badgeBorder:'#00bfff',
     badgeHighBg:'#0066cc',badgeHighEnd:'#00bfff',badgeHighBorder:'#00bfff',
     bgHover:'rgba(0,191,255,0.08)',
-    hero:'🔵 CYBER COMMAND',subtitle:'网络安全态势感知系统',footer:'🔵 实时态势感知'
+    hero:'🔵 CYBER DEFENDER',subtitle:'网络与主机健康防御体系',footer:'🔵 实时态势感知'
   }
 };
 
@@ -299,7 +319,6 @@ function applyTheme(name) {
 
 function setTheme(name) { applyTheme(name); }
 
-// Init theme from localStorage
 (function(){
   const saved = localStorage.getItem('attack-monitor-theme') || 'red';
   applyTheme(saved);
@@ -307,7 +326,53 @@ function setTheme(name) { applyTheme(name); }
 
 // === Data refresh ===
 let autoTimer = null;
-async function refresh(){try{const r=await fetch('/api/data');const d=await r.json();document.getElementById('stat-attack').textContent=d.total_attacks;document.getElementById('stat-banned').textContent=d.f2b_banned_count;document.getElementById('stat-total-banned').textContent=d.f2b_total_banned;document.getElementById('stat-iptables').textContent=d.iptables_blocked;document.getElementById('stat-frps-banned').textContent=d.frps_f2b_banned_count;document.getElementById('stat-frps-total').textContent=d.frps_f2b_total_banned;document.getElementById('stat-syn').textContent=d.syn_count;document.getElementById('f2b-list').innerHTML=d.f2b_html;document.getElementById('f2b-badge').textContent=d.f2b_banned_count;document.getElementById('frps-f2b-list').innerHTML=d.frps_f2b_html;document.getElementById('frps-f2b-badge').textContent=d.frps_f2b_banned_count;document.getElementById('iptables-list').innerHTML=d.iptables_html;document.getElementById('top-ips').innerHTML=d.top_ips_html;document.getElementById('top-users').innerHTML=d.top_users_html;document.getElementById('recent-attacks').innerHTML=d.recent_html;document.getElementById('syn-history').innerHTML=d.syn_html;document.getElementById('frps-scan').innerHTML=d.frps_scan_html;document.getElementById('stat-unames').textContent=d.unames_count;document.getElementById('unames-badge').textContent=d.unames_count;document.getElementById('unames-list').innerHTML=d.unames_html;document.getElementById('update-info').textContent='最后更新: '+d.time}catch(e){console.error(e)}}
+async function refresh(){
+  try{
+    const r=await fetch('/api/data');
+    const d=await r.json();
+    document.getElementById('stat-attack').textContent=d.total_attacks;
+    document.getElementById('stat-banned').textContent=d.f2b_banned_count;
+    document.getElementById('stat-total-banned').textContent=d.f2b_total_banned;
+    document.getElementById('stat-iptables').textContent=d.iptables_blocked;
+    document.getElementById('stat-frps-banned').textContent=d.frps_f2b_banned_count;
+    document.getElementById('stat-frps-total').textContent=d.frps_f2b_total_banned;
+    document.getElementById('stat-syn').textContent=d.syn_count;
+    document.getElementById('stat-unames').textContent=d.unames_count;
+    document.getElementById('stat-reaper').textContent=d.reaper_count;
+    
+    document.getElementById('f2b-list').innerHTML=d.f2b_html;
+    document.getElementById('f2b-badge').textContent=d.f2b_banned_count;
+    document.getElementById('frps-f2b-list').innerHTML=d.frps_f2b_html;
+    document.getElementById('frps-f2b-badge').textContent=d.frps_f2b_banned_count;
+    document.getElementById('iptables-list').innerHTML=d.iptables_html;
+    document.getElementById('top-ips').innerHTML=d.top_ips_html;
+    document.getElementById('top-users').innerHTML=d.top_users_html;
+    document.getElementById('top-procs').innerHTML=d.top_procs_html;
+    document.getElementById('reaper-events').innerHTML=d.reaper_events_html;
+    document.getElementById('reaper-badge').textContent=d.reaper_count;
+    document.getElementById('unames-badge').textContent=d.unames_count;
+    document.getElementById('unames-list').innerHTML=d.unames_html;
+    document.getElementById('recent-attacks').innerHTML=d.recent_html;
+    document.getElementById('syn-history').innerHTML=d.syn_html;
+    document.getElementById('frps-scan').innerHTML=d.frps_scan_html;
+    document.getElementById('update-info').textContent='最后更新: '+d.time;
+  }catch(e){console.error(e)}
+}
+
+async function doKillProcess(pid, comm){
+  if(!confirm(`⚠️ 确认强制终止异常进程 PID ${pid} (${comm}) 吗？`)) return;
+  try{
+    const r=await fetch('/api/reaper/kill',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pid:pid})
+    });
+    const res=await r.json();
+    alert(res.msg);
+    refresh();
+  }catch(e){alert('操作失败: '+e)}
+}
+
 function showBlockIP(){document.getElementById('block-modal').classList.add('show');document.getElementById('block-ip-input').focus()}
 function hideBlockIP(){document.getElementById('block-modal').classList.remove('show')}
 async function doBlockIP(){const ip=document.getElementById('block-ip-input').value.trim();if(!ip)return;try{await fetch('/api/block_ip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:ip})});document.getElementById('block-ip-input').value='';hideBlockIP();refresh()}catch(e){console.error(e)}}
@@ -317,6 +382,7 @@ refresh();autoTimer=setInterval(refresh,5000);
 </body>
 </html>
 """
+
 def run(cmd, timeout=5):
     try:
         out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=timeout).decode("utf-8", errors="replace")
@@ -339,7 +405,7 @@ def get_fail2ban_status():
     except: pass
     try:
         out2 = run(["fail2ban-client", "status", "frps-ssh"])
-        for line in out2.split(chr(10)):
+        for line in out2.split("\n"):
             line = line.strip()
             if "Total failed" in line: frps_total_failed = int(line.split(":")[-1].strip())
             if "Total banned" in line: frps_total_banned = int(line.split(":")[-1].strip())
@@ -348,123 +414,140 @@ def get_fail2ban_status():
                 ips = line.split(":")[-1].strip()
                 if ips: frps_banned_list = [ip.strip() for ip in ips.split() if ip.strip()]
     except: pass
-    return {"banned_list": banned_list, "banned_count": banned_count, "total_banned": total_banned, "total_failed": total_failed,
-            "frps_banned_list": frps_banned_list, "frps_banned_count": frps_banned_count, "frps_total_banned": frps_total_banned, "frps_total_failed": frps_total_failed}
+    return {
+        "banned_count": banned_count,
+        "total_banned": total_banned,
+        "total_failed": total_failed,
+        "banned_list": banned_list,
+        "frps_banned_count": frps_banned_count,
+        "frps_total_banned": frps_total_banned,
+        "frps_total_failed": frps_total_failed,
+        "frps_banned_list": frps_banned_list
+    }
 
 def get_iptables_blocked():
     blocked = []
     try:
-        out = run(["iptables", "-L", "INPUT", "-n", "--line-numbers"])
+        out = run(["iptables", "-L", "INPUT", "-v", "-n", "--line-numbers"])
         for line in out.split("\n"):
-            parts = line.split()
-            if len(parts) >= 5 and parts[0].isdigit() and parts[1] == "DROP":
-                blocked.append({"num": parts[0], "ip": parts[4]})
+            if "DROP" in line:
+                parts = line.split()
+                if len(parts) >= 9:
+                    num = parts[0]
+                    pkts = parts[1]
+                    bytes_ = parts[2]
+                    src = parts[8]
+                    if src != "0.0.0.0/0":
+                        blocked.append({"num": num, "pkts": pkts, "bytes": bytes_, "src": src})
     except: pass
     return blocked
-
-# ===== frps 扫描分析 =====
-
-def get_frps_scan_stats():
-    try:
-        out = run(["tail", "-2000", "/main/app/log/frps.log"])
-        lines = out.strip().split(chr(10))
-        ip_count = {}
-        for line in lines:
-            if "get a user connection" in line:
-                m = re.search(r"\[(\d+\.\d+\.\d+\.\d+):\d+\]", line)
-                if m:
-                    ip = m.group(1)
-                    ip_count[ip] = ip_count.get(ip, 0) + 1
-        top_ips = sorted(ip_count.items(), key=lambda x: -x[1])[:15]
-        return top_ips
-    except: return []
-
-def render_frps_scan_html(top_ips):
-    if not top_ips: return "<div class=\"empty\">\u6682\u65e0\u6570\u636e</div>"
-    total = sum(c for _, c in top_ips)
-    html = "<table><tr><th>#</th><th>IP</th><th>\u8fde\u63a5\u6b21\u6570</th><th>\u5360\u6bd4</th></tr>"
-    for i, (ip, cnt) in enumerate(top_ips, 1):
-        pct = f"{cnt/total*100:.1f}%" if total else "0%"
-        cls = "badge-high" if cnt > 50 else ("badge-mid" if cnt > 10 else "badge-low")
-        html += f"<tr><td>{i}</td><td class=\"ip attack-row\">{ip}</td><td><span class=\"badge-cnt {cls}\">{cnt}</span></td><td>{pct}</td></tr>"
-    return html + "</table>"
 
 def get_syn_flood():
     entries = []
     try:
-        out = run(["dmesg"], timeout=3)
+        out = run(["dmesg", "-T"])
         for line in out.split("\n"):
-            if "SYN flooding" in line:
-                m = re.search(r"\[(\d+\.\d+)\]", line)
-                port_m = re.search(r"port\s+(\S+)", line)
-                if m and port_m:
-                    uptime_sec = float(m.group(1))
-                    days = int(uptime_sec / 86400)
-                    hours = int((uptime_sec % 86400) / 3600)
-                    entries.append({"time": f"{days}d {hours}h ago", "port": port_m.group(1).rstrip(".")})
+            if "possible SYN flooding" in line:
+                m = re.search(r"\[(.*?)\]", line)
+                time_str = m.group(1) if m else "Unknown"
+                m2 = re.search(r"Sending cookies to ([\d\.:a-fA-F]+)", line)
+                ip = m2.group(1) if m2 else "Unknown"
+                m3 = re.search(r"port (\d+)", line)
+                port = m3.group(1) if m3 else "Unknown"
+                entries.append({"time": time_str, "ip": ip, "port": port})
     except: pass
     return entries
 
-def get_lastb_stats():
+def get_frps_scan_stats():
+    stats = []
     try:
-        out = run(["lastb"])
-        lines = out.strip().split("\n")
-        data_lines = [l for l in lines if not l.startswith("btmp") and l.strip()]
-        total = len(data_lines)
-        ip_count = {}; user_count = {}; recent = []
-        for line in data_lines:
+        out = run(["journalctl", "-u", "frps", "--since", "24 hours ago", "--no-pager"])
+        if not out:
+            out = run(["tail", "-n", "5000", "/main/app/log/frps.log"])
+        ip_counts = {}
+        for line in out.split("\n"):
+            if "[ssh" in line and "get a user connection" in line:
+                m = re.search(r"\[([\d\.:a-fA-F]+):\d+\]", line)
+                if m:
+                    ip = m.group(1)
+                    if ip not in ["127.0.0.1", "::1"]:
+                        ip_counts[ip] = ip_counts.get(ip, 0) + 1
+        sorted_ips = sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        stats = [{"ip": ip, "count": count} for ip, count in sorted_ips]
+    except: pass
+    return stats
+
+def get_lastb_stats():
+    total = 0; ip_counts = {}; user_counts = {}; recent = []
+    try:
+        out = run(["lastb", "-n", "1000", "-F", "-w"])
+        for line in out.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("btmp begins"): continue
+            total += 1
             parts = line.split()
             if len(parts) >= 3:
-                username = parts[0]; ip = parts[2]
-                if not re.match(r"^\d+\.\d+\.\d+\.\d+$", ip): continue
-                ip_count[ip] = ip_count.get(ip, 0) + 1
-                user_count[username] = user_count.get(username, 0) + 1
-                recent.append({"user": username, "ip": ip})
-        top_ips = sorted(ip_count.items(), key=lambda x: -x[1])[:15]
-        top_users = sorted(user_count.items(), key=lambda x: -x[1])[:15]
-        recent = recent[-20:]
-        return {"total": total, "top_ips": top_ips, "top_users": top_users, "recent": recent}
-    except: return {"total": 0, "top_ips": [], "top_users": [], "recent": []}
+                user = parts[0]
+                ip = parts[2]
+                user_counts[user] = user_counts.get(user, 0) + 1
+                if ip not in ["127.0.0.1", "::1", "0.0.0.0", "localhost"]:
+                    ip_counts[ip] = ip_counts.get(ip, 0) + 1
+                if len(recent) < 15:
+                    recent.append({"user": user, "ip": ip})
+        top_ips = sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        top_users = sorted(user_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        return {
+            "total": total,
+            "top_ips": [{"ip": ip, "count": count} for ip, count in top_ips],
+            "top_users": [{"user": user, "count": count} for user, count in top_users],
+            "recent": recent
+        }
+    except:
+        return {"total": 0, "top_ips": [], "top_users": [], "recent": []}
 
-def render_f2b_html(s):
-    if not s["banned_list"]: return "<div class=\"empty\">✅ 暂无封禁</div>"
-    html = "<table><tr><th>#</th><th>IP</th></tr>"
-    for i, ip in enumerate(s["banned_list"], 1):
-        html += f"<tr><td>{i}</td><td class=\"ip attack-row\">{ip}</td></tr>"
+def render_f2b_html(f2b):
+    if not f2b["banned_list"]: return "<div class=\"empty\">✅ 暂无封禁 IP</div>"
+    html = "<table><tr><th>#</th><th>IP 地址</th><th>状态</th></tr>"
+    for i, ip in enumerate(f2b["banned_list"], 1):
+        html += f"<tr><td>{i}</td><td class=\"ip\">{ip}</td><td><span class=\"badge-cnt badge-high\">封禁中</span></td></tr>"
     return html + "</table>"
 
-def render_frps_f2b_html(s):
-    if not s["frps_banned_list"]: return chr(60) + chr(100) + chr(105) + chr(118) + chr(32) + chr(99) + chr(108) + chr(97) + chr(115) + chr(115) + chr(61) + chr(34) + chr(101) + chr(109) + chr(112) + chr(116) + chr(121) + chr(34) + chr(62) + chr(9203) + chr(32) + chr(30417) + chr(25511) + chr(20013) + chr(65292) + chr(26242) + chr(23553) + chr(23553) + chr(31105) + chr(60) + chr(47) + chr(100) + chr(105) + chr(118) + chr(62)
-    html = chr(60) + chr(116) + chr(97) + chr(98) + chr(108) + chr(101) + chr(62) + chr(60) + chr(116) + chr(114) + chr(62) + chr(60) + chr(116) + chr(104) + chr(62) + chr(35) + chr(60) + chr(47) + chr(116) + chr(104) + chr(62) + chr(60) + chr(116) + chr(104) + chr(62) + chr(73) + chr(80) + chr(60) + chr(47) + chr(116) + chr(104) + chr(62) + chr(60) + chr(47) + chr(116) + chr(114) + chr(62)
-    for i, ip in enumerate(s["frps_banned_list"], 1):
-        html += chr(60) + chr(116) + chr(114) + chr(62) + chr(60) + chr(116) + chr(100) + chr(62) + str(i) + chr(60) + chr(47) + chr(116) + chr(100) + chr(62) + chr(60) + chr(116) + chr(100) + chr(32) + chr(99) + chr(108) + chr(97) + chr(115) + chr(115) + chr(61) + chr(34) + chr(105) + chr(112) + chr(32) + chr(97) + chr(116) + chr(116) + chr(97) + chr(99) + chr(107) + chr(45) + chr(114) + chr(111) + chr(119) + chr(34) + chr(62) + ip + chr(60) + chr(47) + chr(116) + chr(100) + chr(62) + chr(60) + chr(116) + chr(100) + chr(62) + chr(102) + chr(114) + chr(112) + chr(115) + chr(45) + chr(115) + chr(115) + chr(104) + chr(60) + chr(47) + chr(116) + chr(100) + chr(62) + chr(60) + chr(47) + chr(116) + chr(114) + chr(62)
-    return html + chr(60) + chr(47) + chr(116) + chr(97) + chr(98) + chr(108) + chr(101) + chr(62)
+def render_frps_f2b_html(f2b):
+    if not f2b["frps_banned_list"]: return "<div class=\"empty\">✅ 暂无 frps 封禁 IP</div>"
+    html = "<table><tr><th>#</th><th>IP 地址</th><th>状态</th></tr>"
+    for i, ip in enumerate(f2b["frps_banned_list"], 1):
+        html += f"<tr><td>{i}</td><td class=\"ip\">{ip}</td><td><span class=\"badge-cnt badge-high\">封禁中</span></td></tr>"
+    return html + "</table>"
 
-def render_iptables_html(lst):
-    if not lst: return "<div class=\"empty\">✅ 暂无 ipTables 规则</div>"
-    html = "<table><tr><th>#</th><th>IP</th><th>方式</th></tr>"
-    for item in lst:
-        html += f"<tr><td>{item['num']}</td><td class=\"ip attack-row\">{item['ip']}</td><td>已封禁</td></tr>"
+def render_iptables_html(blocked):
+    if not blocked: return "<div class=\"empty\">✅ 暂无 iptables 规则</div>"
+    html = "<table><tr><th>#</th><th>来源 IP</th><th>拦截包数</th></tr>"
+    for b in blocked:
+        html += f"<tr><td>{b['num']}</td><td class=\"ip\">{b['src']}</td><td><span class=\"badge-cnt badge-mid\">{b['pkts']}</span></td></tr>"
     return html + "</table>"
 
 def render_top_ips_html(top_ips):
     if not top_ips: return "<div class=\"empty\">暂无数据</div>"
-    total = sum(c for _, c in top_ips)
-    html = "<table><tr><th>#</th><th>IP</th><th>次数</th><th>占比</th></tr>"
-    for i, (ip, cnt) in enumerate(top_ips, 1):
-        pct = f"{cnt/total*100:.1f}%" if total else "0%"
-        cls = "badge-high" if cnt > 50 else ("badge-mid" if cnt > 10 else "badge-low")
-        html += f"<tr><td>{i}</td><td class=\"ip attack-row\">{ip}</td><td><span class=\"badge-cnt {cls}\">{cnt}</span></td><td>{pct}</td></tr>"
+    html = "<table><tr><th>#</th><th>IP</th><th>次数</th></tr>"
+    for i, item in enumerate(top_ips, 1):
+        badge = "badge-high" if item['count'] >= 50 else ("badge-mid" if item['count'] >= 10 else "badge-low")
+        html += f"<tr><td>{i}</td><td class=\"ip\">{item['ip']}</td><td><span class=\"badge-cnt {badge}\">{item['count']}</span></td></tr>"
     return html + "</table>"
 
 def render_top_users_html(top_users):
     if not top_users: return "<div class=\"empty\">暂无数据</div>"
-    total = sum(c for _, c in top_users)
-    html = "<table><tr><th>#</th><th>账号</th><th>次数</th><th>%</th></tr>"
-    for i, (user, cnt) in enumerate(top_users, 1):
-        pct = f"{cnt/total*100:.1f}%" if total else "0%"
-        cls = "badge-high" if cnt > 50 else ("badge-mid" if cnt > 10 else "badge-low")
-        html += f"<tr><td>{i}</td><td class=\"user\">{user}</td><td><span class=\"badge-cnt {cls}\">{cnt}</span></td><td>{pct}</td></tr>"
+    html = "<table><tr><th>#</th><th>用户名</th><th>次数</th></tr>"
+    for i, item in enumerate(top_users, 1):
+        badge = "badge-high" if item['count'] >= 50 else ("badge-mid" if item['count'] >= 10 else "badge-low")
+        html += f"<tr><td>{i}</td><td class=\"user\">{item['user']}</td><td><span class=\"badge-cnt {badge}\">{item['count']}</span></td></tr>"
+    return html + "</table>"
+
+def render_frps_scan_html(frps_scan):
+    if not frps_scan: return "<div class=\"empty\">✅ 暂无扫描记录</div>"
+    html = "<table><tr><th>#</th><th>IP</th><th>扫描连接数</th></tr>"
+    for i, item in enumerate(frps_scan, 1):
+        badge = "badge-high" if item['count'] >= 50 else ("badge-mid" if item['count'] >= 10 else "badge-low")
+        html += f"<tr><td>{i}</td><td class=\"ip\">{item['ip']}</td><td><span class=\"badge-cnt {badge}\">{item['count']}</span></td></tr>"
     return html + "</table>"
 
 def render_recent_html(recent):
@@ -481,11 +564,10 @@ def render_syn_html(entries):
         html += f"<tr><td class=\"time\">{e['time']}</td><td class=\"ip attack-row\">{e['port']}</td></tr>"
     return html + "</table>"
 
-# ===== 用户名风暴永久封禁(usernames.py 写入) =====
+# ===== 用户名风暴永久封禁 =====
 UNAMES_BAN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "perm_ban.txt")
 
 def get_usernames_bans():
-    """读 usernames.py 生成的永久封禁列表: 每行 ip\t用户名数\t时间"""
     bans = []
     try:
         with open(UNAMES_BAN_FILE) as f:
@@ -506,6 +588,23 @@ def render_usernames_html(bans):
         html += f"<tr><td>{i}</td><td class=\"ip attack-row\">{b['ip']}</td><td><span class=\"badge-cnt badge-high\">{b['users']}</span></td><td class=\"time\">{b['time']}</td></tr>"
     return html + "</table>"
 
+# ===== 异常进程收割与实时高 CPU 监控 (Reaper 模块) =====
+def render_top_procs_html(procs):
+    if not procs: return "<div class=\"empty\">✅ 暂无高负载进程</div>"
+    html = "<table><tr><th>PID</th><th>用户</th><th>%CPU</th><th>运行时长</th><th>命令</th><th>操作</th></tr>"
+    for p in procs[:6]:
+        cpu_badge = "badge-high" if p['cpu'] >= 50.0 else ("badge-mid" if p['cpu'] >= 20.0 else "badge-low")
+        cmd_short = p['comm']
+        html += f"<tr><td><b>{p['pid']}</b></td><td>{p['user']}</td><td><span class=\"badge-cnt {cpu_badge}\">{p['cpu']}%</span></td><td class=\"time\">{p['etime']}</td><td title=\"{p['args']}\">{cmd_short}</td><td><button class=\"btn-kill\" onclick=\"doKillProcess({p['pid']}, '{p['comm']}')\">终止</button></td></tr>"
+    return html + "</table>"
+
+def render_reaper_events_html(events):
+    if not events: return "<div class=\"empty\">✅ 系统平稳，暂无失控异常进程</div>"
+    html = "<table><tr><th>时间</th><th>PID</th><th>命令</th><th>收割原因</th></tr>"
+    for ev in events[:10]:
+        html += f"<tr><td class=\"time\">{ev['time']}</td><td class=\"ip\">{ev['pid']}</td><td><b>{ev['comm']}</b></td><td style=\"color:var(--danger)\">{ev['reason']}</td></tr>"
+    return html + "</table>"
+
 @app.route("/")
 def index():
     return render_template_string(HTML)
@@ -518,6 +617,8 @@ def api_data():
     lastb = get_lastb_stats()
     frps_scan = get_frps_scan_stats()
     unames_bans = get_usernames_bans()
+    top_procs = get_high_cpu_processes(limit=6)
+    reaper_events = load_events()
     return jsonify({
         "total_attacks": lastb["total"],
         "f2b_banned_count": f2b["banned_count"],
@@ -538,6 +639,9 @@ def api_data():
         "frps_scan_html": render_frps_scan_html(frps_scan),
         "unames_count": len(unames_bans),
         "unames_html": render_usernames_html(unames_bans),
+        "reaper_count": len(reaper_events),
+        "reaper_events_html": render_reaper_events_html(reaper_events),
+        "top_procs_html": render_top_procs_html(top_procs),
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
 
@@ -554,9 +658,23 @@ def block_ip():
     try:
         run(["iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"], timeout=3)
         run(["iptables-save"], timeout=3)
-        return jsonify({"status": "ok", "msg": "封禁ed"})
+        return jsonify({"status": "ok", "msg": "封禁成功"})
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)})
 
+@app.route("/api/reaper/kill", methods=["POST"])
+def api_kill_process():
+    data = request.get_json() or {}
+    pid = data.get("pid")
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "msg": "无效 PID"})
+    ok, msg = kill_by_pid(pid)
+    return jsonify({"status": "ok" if ok else "error", "msg": msg})
+
 if __name__ == "__main__":
+    # 启动后台收割巡检线程
+    t = threading.Thread(target=reaper_background_worker, daemon=True)
+    t.start()
     app.run(host="0.0.0.0", port=8899, debug=False)
