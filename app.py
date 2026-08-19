@@ -179,7 +179,7 @@ tr:hover td{background:var(--bg-hover)}
   <div class="stat-card blocked"><div class="num" id="stat-frps-total">-</div><div class="label">🏆 frps 累计封禁</div></div>
   <div class="stat-card blocked"><div class="num" id="stat-iptables">-</div><div class="label">🛡️ iptables 屏蔽</div></div>
   <div class="stat-card syn"><div class="num" id="stat-syn">-</div><div class="label">💣 SYN Flood 告警</div></div>
-  <div class="stat-card banned"><div class="num" id="stat-unames">-</div><div class="label">🔐 用户名风暴封禁</div><div class="badge-wrapper">!</div></div>
+  <div class="stat-card banned"><div class="num" id="stat-unames">-</div><div class="label">🔐 境外/风暴永久封禁</div><div class="badge-wrapper">!</div></div>
   <div class="stat-card reaper"><div class="num" id="stat-reaper">-</div><div class="label">⚡ 自动自愈收割</div><div class="badge-wrapper">!</div></div>
 </div>
 
@@ -191,7 +191,7 @@ tr:hover td{background:var(--bg-hover)}
   <div class="card"><h2>🎯 被尝试账号排行</h2><div id="top-users"><div class="empty">加载中...</div></div></div>
   <div class="card"><h2>🔥 实时高 CPU 进程监控</h2><div id="top-procs"><div class="empty">加载中...</div></div></div>
   <div class="card"><h2>⚡ 异常失控进程收割战报 <span class="badge" id="reaper-badge">0</span></h2><div id="reaper-events"><div class="empty">✅ 系统平稳，暂无失控进程</div></div></div>
-  <div class="card"><h2>🔐 用户名风暴永久封禁 <span class="badge" id="unames-badge">0</span></h2><div id="unames-list"><div class="empty">✅ 暂无封禁</div></div></div>
+  <div class="card"><h2>🔐 境外拦截与用户名风暴封禁 <span class="badge" id="unames-badge">0</span></h2><div id="unames-list"><div class="empty">✅ 暂无封禁</div></div></div>
   <div class="card"><h2>📊 frps 端口扫描 TOP IP</h2><div id="frps-scan"><div class="empty">⏳ 分析中...</div></div></div>
   <div class="card"><h2>💣 SYN Flood 告警历史</h2><div id="syn-history"><div class="empty">✅ 未检测到攻击</div></div></div>
   <div class="card"><h2>🕒 最近攻击记录</h2><div id="recent-attacks"><div class="empty">加载中...</div></div></div>
@@ -570,22 +570,28 @@ UNAMES_BAN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data
 def get_usernames_bans():
     bans = []
     try:
-        with open(UNAMES_BAN_FILE) as f:
+        with open(UNAMES_BAN_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line: continue
                 parts = line.split("\t")
-                bans.append({"ip": parts[0], "users": parts[1] if len(parts) > 1 else "-",
-                             "time": parts[2] if len(parts) > 2 else "-"})
+                bans.append({
+                    "ip": parts[0],
+                    "reason": parts[1] if len(parts) > 1 else "-",
+                    "time": parts[2] if len(parts) > 2 else "-",
+                    "location": parts[3] if len(parts) > 3 else "-"
+                })
     except Exception:
         pass
     return bans
 
 def render_usernames_html(bans):
-    if not bans: return "<div class=\"empty\">✅ 暂无用户名风暴封禁</div>"
-    html = "<table><tr><th>#</th><th>IP</th><th>不同用户名</th><th>封禁时间</th></tr>"
+    if not bans: return "<div class=\"empty\">✅ 暂无永久封禁</div>"
+    html = "<table><tr><th>#</th><th>IP 地址</th><th>拦截原因</th><th>归属地</th><th>封禁时间</th></tr>"
     for i, b in enumerate(bans, 1):
-        html += f"<tr><td>{i}</td><td class=\"ip attack-row\">{b['ip']}</td><td><span class=\"badge-cnt badge-high\">{b['users']}</span></td><td class=\"time\">{b['time']}</td></tr>"
+        loc_str = b.get('location', '-')
+        badge_cls = "badge-high" if "境外" in b.get('reason', '') else "badge-mid"
+        html += f"<tr><td>{i}</td><td class=\"ip attack-row\">{b['ip']}</td><td><span class=\"badge-cnt {badge_cls}\">{b['reason']}</span></td><td style=\"color:var(--text)\">{loc_str}</td><td class=\"time\">{b['time']}</td></tr>"
     return html + "</table>"
 
 # ===== 异常进程收割与实时高 CPU 监控 (Reaper 模块) =====
