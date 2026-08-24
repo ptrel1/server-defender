@@ -1,6 +1,22 @@
+# ---- Go 编译产物 ----
+server-defender
+*.exe
+
+# ---- 运行时数据 ----
+data/
+*.log
+
+# ---- Python 遗留（Go 化后退居 backup 供回退）----
+backup/
+**/*.py
 venv/
 __pycache__/
 *.pyc
-data/
-*.log
+
+# ---- 本地配置备份 ----
 app.toml.bak
+
+# ---- 测试/临时（项目约定目录）----
+test/
+update_package/
+dev/

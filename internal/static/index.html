@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Server Defender — 服务器安全与自愈防御中心</title>
+<style>
+:root {
+  --bg: #090d16;
+  --bg-gradient: radial-gradient(circle at 50% 0%, #151e32 0%, #090d16 85%);
+  --panel-bg: rgba(21, 30, 48, 0.65);
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --card-bg: rgba(14, 21, 35, 0.7);
+  --card-border: rgba(255, 255, 255, 0.06);
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --apple-blue: #0a84ff;
+  --apple-green: #30d158;
+  --apple-orange: #ff9f0a;
+  --apple-red: #ff453a;
+  --apple-purple: #bf5af2;
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.25);
+  --shadow-md: 0 8px 24px rgba(0,0,0,0.35);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); background-image: var(--bg-gradient); background-attachment:fixed;
+  color: var(--text-primary); min-height:100vh; padding:24px 32px; line-height:1.5;
+}
+.header { display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; padding:16px 24px;
+  background:var(--panel-bg); backdrop-filter:blur(24px); border:1px solid var(--panel-border); border-radius:18px; box-shadow:var(--shadow-md); }
+.brand { display:flex; align-items:center; gap:14px; }
+.brand-icon { width:42px; height:42px; border-radius:12px; background:linear-gradient(135deg,var(--apple-blue),#5e5ce6); display:flex; align-items:center; justify-content:center; font-size:22px; }
+.brand-info h1 { font-size:19px; font-weight:700; color:#fff; display:flex; align-items:center; gap:10px; }
+.status-tag { font-size:11px; padding:2px 9px; border-radius:20px; background:rgba(48,209,88,0.15); color:var(--apple-green); border:1px solid rgba(48,209,88,0.3); }
+.brand-info p { font-size:12px; color:var(--text-secondary); margin-top:1px; }
+.header-actions { display:flex; align-items:center; gap:14px; }
+.time-badge { font-size:12px; color:var(--text-muted); font-family:"JetBrains Mono",monospace; background:rgba(0,0,0,0.2); padding:6px 12px; border-radius:10px; }
+.btn { display:inline-flex; align-items:center; gap:6px; padding:8px 16px; border-radius:10px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all 0.2s; }
+.btn-primary { background:linear-gradient(135deg,var(--apple-blue),#0066cc); color:#fff; }
+.btn-secondary { background:rgba(255,255,255,0.08); color:var(--text-secondary); border:1px solid rgba(255,255,255,0.05); }
+.metrics-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:24px; }
+.metric-card { background:var(--panel-bg); backdrop-filter:blur(20px); border:1px solid var(--panel-border); border-radius:16px; padding:16px 18px; box-shadow:var(--shadow-sm); }
+.metric-label { font-size:12px; color:var(--text-secondary); display:flex; align-items:center; gap:6px; font-weight:500; }
+.metric-value { font-size:28px; font-weight:700; color:#fff; margin-top:6px; font-family:"JetBrains Mono",-apple-system,sans-serif; }
+.metric-sub { font-size:11px; color:var(--text-muted); margin-top:4px; }
+.text-danger { color:var(--apple-red)!important; } .text-warning { color:var(--apple-orange)!important; }
+.text-blue { color:var(--apple-blue)!important; } .text-success { color:var(--apple-green)!important; } .text-purple { color:var(--apple-purple)!important; }
+.main-workspace { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+@media (max-width:1180px) { .main-workspace { grid-template-columns:1fr; } body { padding:16px; } }
+.column { display:flex; flex-direction:column; gap:20px; }
+.glass-card { background:var(--panel-bg); backdrop-filter:blur(24px); border:1px solid var(--panel-border); border-radius:18px; padding:20px 22px; box-shadow:var(--shadow-md); }
+.card-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.05); }
+.card-title { font-size:15px; font-weight:600; color:#fff; display:flex; align-items:center; gap:8px; }
+.count-badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:12px; background:rgba(255,255,255,0.08); color:var(--text-secondary); }
+table { width:100%; border-collapse:collapse; font-size:13px; text-align:left; }
+th { color:var(--text-muted); font-weight:500; padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.05); font-size:12px; }
+td { padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.03); color:var(--text-secondary); }
+tr:hover td { background:rgba(255,255,255,0.03); }
+.ip-cell { font-family:"JetBrains Mono",monospace; font-size:12.5px; color:var(--text-primary); font-weight:500; }
+.time-cell { font-family:"JetBrains Mono",monospace; font-size:11.5px; color:var(--text-muted); }
+.user-cell { color:#64d2ff; font-weight:500; }
+.tag { display:inline-flex; align-items:center; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:500; }
+.tag-danger { background:rgba(255,69,58,0.15); color:#ff6b62; border:1px solid rgba(255,69,58,0.3); }
+.tag-warning { background:rgba(255,159,10,0.15); color:#ffb340; border:1px solid rgba(255,159,10,0.3); }
+.tag-success { background:rgba(48,209,88,0.15); color:#52dc74; border:1px solid rgba(48,209,88,0.3); }
+.tag-blue { background:rgba(10,132,255,0.15); color:#4da3ff; border:1px solid rgba(10,132,255,0.3); }
+.empty-state { padding:28px 0; text-align:center; color:var(--text-muted); font-size:13px; display:flex; flex-direction:column; align-items:center; gap:6px; }
+.empty-icon { font-size:24px; opacity:0.6; }
+.btn-terminate { padding:3px 9px; border-radius:6px; font-size:11px; font-weight:600; background:rgba(255,69,58,0.15); color:#ff5e52; border:1px solid rgba(255,69,58,0.3); cursor:pointer; }
+.modal { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); backdrop-filter:blur(16px); z-index:999; align-items:center; justify-content:center; }
+.modal.show { display:flex; }
+.modal-dialog { background:#182236; border:1px solid rgba(255,255,255,0.12); border-radius:20px; padding:28px; width:90%; max-width:420px; }
+.modal-title { font-size:17px; font-weight:600; color:#fff; margin-bottom:8px; }
+.modal-desc { font-size:13px; color:var(--text-secondary); margin-bottom:18px; }
+.modal-input { width:100%; padding:10px 14px; border-radius:10px; background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.1); color:#fff; font-family:"JetBrains Mono",monospace; font-size:14px; margin-bottom:20px; }
+.modal-footer { display:flex; justify-content:flex-end; gap:10px; }
+/* NetMon 特有样式 */
+.net-alert-item { display:flex; align-items:center; gap:10px; padding:8px 4px; border-bottom:1px solid rgba(255,255,255,0.05); font-size:12px; }
+.state-flex { display:flex; flex-wrap:wrap; gap:8px; }
+.state-chip { display:flex; align-items:center; gap:6px; background:rgba(255,255,255,0.04); padding:4px 10px; border-radius:8px; }
+.net-bandwidth { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+.net-value { font-size:22px; font-weight:700; color:var(--apple-blue); font-family:"JetBrains Mono",monospace; }
+.net-rate { font-size:13px; color:var(--text-secondary); }
+.chart-wrap { position:relative; height:220px; }
+.nic-row { display:flex; justify-content:space-between; align-items:center; padding:8px 4px; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px; }
+.nic-virtual { opacity:0.55; font-size:12px; }
+.toggle-btn { padding:4px 10px; border-radius:6px; font-size:11px; background:rgba(255,255,255,0.08); color:var(--text-secondary); border:1px solid rgba(255,255,255,0.1); cursor:pointer; }
+</style>
+</head>
+<body>
+<header class="header">
+  <div class="brand">
+    <div class="brand-icon">🛡️</div>
+    <div class="brand-info">
+      <h1>Server Defender <span class="status-tag">实时防护中</span></h1>
+      <p>服务器安全监控与网络自愈防御中心</p>
+    </div>
+  </div>
+  <div class="header-actions">
+    <div class="time-badge" id="update-time">初始化中...</div>
+    <button class="btn btn-primary" onclick="showBlockModal()"><span>🚧</span> 手动封禁 IP</button>
+  </div>
+</header>
+
+<!-- KPI 指标行 -->
+<section class="metrics-row">
+  <div class="metric-card"><div class="metric-label">🛡️ 境外/爆破永久封禁</div><div class="metric-value text-danger" id="stat-unames">-</div><div class="metric-sub">自动下发 iptables 并同步</div></div>
+  <div class="metric-card"><div class="metric-label">🔒 fail2ban SSH 封禁</div><div class="metric-value text-warning" id="stat-f2b-banned">-</div><div class="metric-sub">累计阻断:<span id="stat-f2b-total">-</span> 次</div></div>
+  <div class="metric-card"><div class="metric-label">🌐 frps 隧道封禁</div><div class="metric-value text-blue" id="stat-frps-banned">-</div><div class="metric-sub">累计封禁:<span id="stat-frps-total">-</span> 次</div></div>
+  <div class="metric-card"><div class="metric-label">⚡ 进程自愈收割</div><div class="metric-value text-purple" id="stat-reaper">-</div><div class="metric-sub">失控孤儿进程收割数</div></div>
+  <div class="metric-card"><div class="metric-label">🗡️ SSH 探测尝试</div><div class="metric-value text-success" id="stat-total-attacks">-</div><div class="metric-sub">历史探测与攻击频次</div></div>
+  <div class="metric-card"><div class="metric-label">📡 实时上下行</div><div class="metric-value text-blue" id="stat-net-rx">-</div><div class="metric-sub">当前总流量速率</div></div>
+</section>
+
+<!-- 网络监控横幅区 -->
+<section style="display:flex;flex-direction:column;gap:20px;margin-bottom:20px;">
+  <!-- 带宽与告警 -->
+  <div class="glass-card">
+    <div class="card-header"><div class="card-title">🌊 实时流量带宽</div><button class="toggle-btn" onclick="toggleNic()">切换网卡视图</button></div>
+    <div class="net-bandwidth" style="margin-bottom:12px;">
+      <div class="net-value" id="net-total-rx">0.00 MB/s</div><span class="net-rate">入站</span>
+      <div class="net-value" id="net-total-tx">0.00 MB/s</div><span class="net-rate">出站</span>
+    </div>
+    <div id="nic-list"></div>
+  </div>
+  <div class="glass-card">
+    <div class="card-header"><div class="card-title">🚨 网络异常告警</div><div class="count-badge" id="badge-alerts">0</div></div>
+    <div id="container-alerts"><div class="empty-state"><div class="empty-icon">⌛</div><span>检测中...</span></div></div>
+  </div>
+  <div class="glass-card">
+    <div class="card-header"><div class="card-title">📈 24 小时带宽 & 连接趋势</div></div>
+    <div class="chart-wrap"><canvas id="statusChart"></canvas></div>
+  </div>
+</section>
+
+<!-- 主工作台双栏 -->
+<main class="main-workspace">
+  <div class="column">
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🔐 境外 IP 阻断与用户名风暴封禁</div><div class="count-badge" id="badge-unames">0</div></div>
+      <div id="container-unames"><div class="empty-state"><div class="empty-icon">✅</div><span>系统平稳，暂无永久封禁 IP</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🛡️ frps 隧道 fail2ban 动态封禁</div><div class="count-badge" id="badge-frps-f2b">0</div></div>
+      <div id="container-frps-f2b"><div class="empty-state"><div class="empty-icon">✅</div><span>暂无动态封禁 IP</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🌐 网络连接分析</div></div>
+      <div class="card-title2" style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">TCP 状态分布</div>
+      <div id="container-net-states"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+      <div class="card-title2" style="font-size:12px;color:var(--text-muted);margin:10px 0 8px;">TOP 对端 IP（含归属地）</div>
+      <div id="container-net-top-ips"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🎯 端口监听透视</div></div>
+      <div id="container-net-listens"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+  </div>
+
+  <div class="column">
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🔀 frps 隧道流量统计</div></div>
+      <div id="container-frps"><div class="empty-state"><div class="empty-icon">⌛</div><span>加载中...</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🕒 实时探测与攻击事件流</div></div>
+      <div id="container-recent"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🏅 攻击来源 TOP IP</div></div>
+      <div id="container-top-ips"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🔥 实时 TOP 负载进程监控</div></div>
+      <div id="container-top-procs"><div class="empty-state"><div class="empty-icon">⌛</div><span>扫描系统负载中...</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">⚡ 异常失控进程自愈收割战报</div><div class="count-badge" id="badge-reaper">0</div></div>
+      <div id="container-reaper"><div class="empty-state"><div class="empty-icon">✅</div><span>系统平稳，未出现失控死循环孤儿进程</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🎯 被探测爆破账号排行</div></div>
+      <div id="container-top-users"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">📋 本机 SSH fail2ban 封禁态势</div><div class="count-badge" id="badge-f2b">0</div></div>
+      <div id="container-f2b"><div class="empty-state"><div class="empty-icon">✅</div><span>本机直连 22 端口无异常</span></div></div>
+    </div>
+  </div>
+</main>
+
+<!-- 手动封禁模态框 -->
+<div class="modal" id="blockModal">
+  <div class="modal-dialog">
+    <div class="modal-title">🚧 手动封禁恶意 IP</div>
+    <div class="modal-desc">下发 iptables DROP 规则至本机并自动同步至公网中转机。</div>
+    <input type="text" id="blockIpInput" class="modal-input" placeholder="输入 IP 地址 (如: 198.51.100.24)" />
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="hideBlockModal()">取消</button>
+      <button class="btn btn-primary" onclick="submitBlockIP()">确认封禁</button>
+    </div>
+  </div>
+</div>
+
+<script src="chart.umd.js"></script>
+<script>
+let showVirtual = false;
+let historyChart = null;
+
+function fmtRate(bps) {
+  if (bps >= 1048576) return (bps/1048576).toFixed(2) + ' MB/s';
+  if (bps >= 1024) return (bps/1024).toFixed(1) + ' KB/s';
+  return bps.toFixed(0) + ' B/s';
+}
+
+async function fetchData() {
+  try {
+    const v = showVirtual ? '1' : '0';
+    const res = await fetch('/api/data?virtual=' + v);
+    const data = await res.json();
+
+    document.getElementById('stat-unames').textContent = data.unames_count || 0;
+    document.getElementById('stat-f2b-banned').textContent = data.f2b_banned_count || 0;
+    document.getElementById('stat-f2b-total').textContent = data.f2b_total_banned || 0;
+    document.getElementById('stat-frps-banned').textContent = data.frps_f2b_banned_count || 0;
+    document.getElementById('stat-frps-total').textContent = data.frps_f2b_total_banned || 0;
+    document.getElementById('stat-reaper').textContent = data.reaper_count || 0;
+    document.getElementById('stat-total-attacks').textContent = data.total_attacks || 0;
+    document.getElementById('stat-net-rx').textContent = fmtRate((data.net_total_rx||0));
+    document.getElementById('badge-unames').textContent = data.unames_count || 0;
+    document.getElementById('badge-frps-f2b').textContent = data.frps_f2b_banned_count || 0;
+    document.getElementById('badge-f2b').textContent = data.f2b_banned_count || 0;
+    document.getElementById('badge-reaper').textContent = data.reaper_count || 0;
+    document.getElementById('badge-alerts').textContent = data.alerts_count || 0;
+
+    document.getElementById('net-total-rx').textContent = fmtRate(data.net_total_rx||0);
+    document.getElementById('net-total-tx').textContent = fmtRate(data.net_total_tx||0);
+    document.getElementById('nic-list').innerHTML = data.nics_html;
+    document.getElementById('container-alerts').innerHTML = data.alerts_html;
+    document.getElementById('container-unames').innerHTML = data.unames_html;
+    document.getElementById('container-frps-f2b').innerHTML = data.frps_f2b_html;
+    document.getElementById('container-recent').innerHTML = data.recent_html;
+    document.getElementById('container-top-ips').innerHTML = data.top_ips_html;
+    document.getElementById('container-top-procs').innerHTML = data.top_procs_html;
+    document.getElementById('container-reaper').innerHTML = data.reaper_events_html;
+    document.getElementById('container-top-users').innerHTML = data.top_users_html;
+    document.getElementById('container-f2b').innerHTML = data.f2b_html;
+    document.getElementById('container-net-states').innerHTML = data.net_states_html;
+    document.getElementById('container-net-top-ips').innerHTML = data.net_top_ips_html;
+    document.getElementById('container-net-listens').innerHTML = data.net_listens_html;
+    document.getElementById('container-frps').innerHTML = data.frps_html;
+    document.getElementById('update-time').textContent = data.time;
+
+    renderChart(data.history || []);
+  } catch (err) { console.error('Fetch error:', err); }
+}
+
+function renderChart(history) {
+  const labels = history.map(p => p.time);
+  const rx = history.map(p => +(p.rx_rate/1024).toFixed(1));
+  const tx = history.map(p => +(p.tx_rate/1024).toFixed(1));
+  const tcp = history.map(p => p.tcp_total);
+  const ctx = document.getElementById('statusChart');
+  if (!ctx) return;
+  if (historyChart) { historyChart.data.labels = labels; historyChart.data.datasets[0].data = rx; historyChart.data.datasets[1].data = tx; historyChart.data.datasets[2].data = tcp; historyChart.update(); return; }
+  let maxTcp = 1; tcp.forEach(v => { if (v > maxTcp) maxTcp = v; });
+  historyChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [
+      { label:'入站 KB/s', data:rx, borderColor:'#0a84ff', tension:0.3, pointRadius:0, borderWidth:2 },
+      { label:'出站 KB/s', data:tx, borderColor:'#30d158', tension:0.3, pointRadius:0, borderWidth:2 },
+      { label:'TCP 连接数', data:tcp, borderColor:'#bf5af2', tension:0.3, pointRadius:0, borderWidth:1.5, yAxisID:'y1' }
+    ]},
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{ mode:'index', intersect:false },
+      scales: {
+        y:{ beginAtZero:true, grid:{ color:'rgba(255,255,255,0.05)' }, ticks:{ color:'#64748b' } },
+        y1:{ position:'right', beginAtZero:true, grid:{ drawOnChartArea:false }, ticks:{ color:'#bf5af2' } },
+        x:{ grid:{ display:false }, ticks:{ color:'#64748b', maxTicksLimit:8 } }
+      },
+      plugins:{ legend:{ labels:{ color:'#94a3b8' } } }
+    }
+  });
+}
+
+function toggleNic() { showVirtual = !showVirtual; fetchData(); }
+
+async function doKillProcess(pid, comm) {
+  if (!confirm('⚠️ 确认强制终止异常失控进程 PID ' + pid + ' (' + comm + ') 吗？')) return;
+  const res = await fetch('/api/reaper/kill', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({pid: pid}) });
+  const r = await res.json(); alert(r.msg); fetchData();
+}
+function showBlockModal() { document.getElementById('blockModal').classList.add('show'); document.getElementById('blockIpInput').focus(); }
+function hideBlockModal() { document.getElementById('blockModal').classList.remove('show'); }
+async function submitBlockIP() {
+  const ip = document.getElementById('blockIpInput').value.trim();
+  if (!ip) return;
+  await fetch('/api/block_ip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip: ip}) });
+  document.getElementById('blockIpInput').value=''; hideBlockModal(); fetchData();
+}
+document.getElementById('blockIpInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitBlockIP(); });
+
+fetchData();
+setInterval(fetchData, 4000);
+</script>
+</body>
+</html>
