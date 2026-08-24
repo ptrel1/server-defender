@@ -1,5 +1,5 @@
 name = "server-defender"
-repo = "https://git.ptrel.cc.cd:53103/ptrel/server-defender.git"
+repo = "https://github.com/ptrel1/server-defender.git"
 deploy_type = "python-git"
 supervisor_service = "server-defender"
 deploy_user = "root"
