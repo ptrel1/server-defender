@@ -208,6 +208,74 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 
 <script src="chart.umd.js"></script>
 <script>
+// ===== 前端日志回传：JS 异常 / console / 环境编码诊断，POST 到 /api/client_log =====
+(function() {
+  const queue = [];
+  let timer = null;
+
+  function push(type, level, message, ext) {
+    try {
+      queue.push({
+        time: new Date().toLocaleString('sv-SE'),
+        type: type,
+        level: level,
+        message: String(message).slice(0, 4000),
+        url: location.href,
+        lang: navigator.language,
+        ext: ext || null
+      });
+      if (queue.length >= 10) flush();
+      else if (!timer) { timer = setTimeout(flush, 5000); }
+    } catch (e) { /* 日志系统自身异常静默 */ }
+  }
+
+  function flush() {
+    clearTimeout(timer); timer = null;
+    if (!queue.length) return;
+    const batch = queue.splice(0, queue.length);
+    // sendBeacon 优先（页面关闭也不丢），退级 fetch keepalive
+    const blob = new Blob([JSON.stringify(batch)], { type: 'application/json' });
+    if (navigator.sendBeacon && navigator.sendBeacon('/api/client_log', blob)) return;
+    fetch('/api/client_log', { method: 'POST', body: JSON.stringify(batch), keepalive: true }).catch(function(){});
+  }
+
+  // 1. 全局 JS 异常与 Promise 拒绝
+  window.addEventListener('error', function(e) {
+    push('error', 'error', e.message + ' @' + (e.filename||'') + ':' + (e.lineno||'') , { stack: (e.error && e.error.stack || '').slice(0,2000) });
+  });
+  window.addEventListener('unhandledrejection', function(e) {
+    push('error', 'error', 'UnhandledRejection: ' + (e.reason && e.reason.message || e.reason));
+  });
+
+  // 2. console.error/warn 镜像
+  ['error','warn'].forEach(function(level) {
+    const orig = console[level].bind(console);
+    console[level] = function() {
+      push('console', level, Array.from(arguments).map(a => {
+        try { return typeof a === 'object' ? JSON.stringify(a).slice(0,800) : String(a); } catch(_) { return String(a); }
+      }).join(' | '));
+      orig.apply(console, arguments);
+    };
+  });
+
+  // 3. 页面加载时环境/编码诊断快照（排查"乱码"问题关键）
+  window.addEventListener('load', function() {
+    setTimeout(function() {
+      const probes = {};
+      // 用中文字符串探测浏览器实际渲染的字符状态
+      probes.titleBytesOk = document.title.indexOf('防御中心') !== -1;
+      probes.charsetMeta = document.characterSet;             // 浏览器实际使用的编码
+      probes.charsetDeclared = document.querySelector('meta[charset]') ? document.querySelector('meta[charset]').getAttribute('charset') : '';
+      probes.screenRes = screen.width + 'x' + screen.height + '@' + devicePixelRatio;
+      push('env', 'info', '页面加载诊断', probes);
+      flush();
+    }, 1500);
+  });
+
+  window.addEventListener('beforeunload', flush);
+})();
+</script>
+<script>
 let showVirtual = false;
 let historyChart = null;
 

@@ -99,6 +99,9 @@ func main() {
 		handler.WriteJSON(w, map[string]interface{}{"code": code, "msg": msg})
 	})
 
+	// 前端日志上报（浏览器 JS 异常 / 环境快照，排查本地渲染问题）
+	mux.HandleFunc("/api/client_log", handler.PostClientLog)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8899"
