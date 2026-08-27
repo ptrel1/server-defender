@@ -104,7 +104,7 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 .region-chip { display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:16px; font-size:11.5px; font-weight:600; color:var(--text-secondary); background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.07); cursor:pointer; transition:all 0.18s; user-select:none; }
 .region-chip:hover { color:var(--text-primary); border-color:rgba(10,132,255,0.5); transform:translateY(-1px); }
 .region-chip.active { background:linear-gradient(135deg,var(--apple-red),#c9302c); color:#fff; border-color:transparent; box-shadow:0 2px 10px rgba(255,69,58,0.35); }
-.region-chip .agg-bar { font-size:8px; letter-spacing:-1px; opacity:0.7; }
+.region-chip.region-toggle, .region-chip.region-collapse { background:rgba(10,132,255,0.12); color:#4da3ff; border-color:rgba(10,132,255,0.3); }
 </style>
 </head>
 <body>
@@ -433,6 +433,14 @@ function filterRegion(region) {
   document.querySelectorAll('#container-foreign-bans .ban-row').forEach(tr => {
     tr.style.display = (region === '*' || tr.dataset.region === region) ? '' : 'none';
   });
+}
+// 展开/收起长尾地区
+function toggleRegionExtra(show) {
+  document.querySelectorAll('#region-agg .region-extra').forEach(c => c.style.display = show ? '' : 'none');
+  const t = document.querySelector('#region-agg .region-toggle');
+  const col = document.querySelector('#region-agg .region-collapse');
+  if (t) t.style.display = show ? 'none' : '';
+  if (col) col.style.display = show ? '' : 'none';
 }
 
 // ===== Tab 切换 =====

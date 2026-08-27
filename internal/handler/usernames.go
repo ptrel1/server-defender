@@ -76,17 +76,20 @@ func RenderForeignBansHTML(bans []UsernameBan) string {
 	return renderBanTable(foreign)
 }
 
-// RenderRegionAggHTML 渲染境外封禁的归属地聚合条（点击筛选，渐进披露）。
-// 输出形如：保加利亚 [▓▓▓▓] 20 · 越南 [▓▓▓] 13 ...，chip 带 data-region 可被前端点击过滤。
+// RenderRegionAggHTML 渲染境外封禁的归属地聚合筛选条。
+// 设计心理学：帕累托法则——只平铺 Top5 高频地区，长尾折叠进「其他 N 个地区」，
+// 避免聚合条自身成为过载区；去掉冗余迷你条形符号，数字即大小编码。
 func RenderRegionAggHTML(bans []UsernameBan) string {
 	counts := map[string]int{}
 	order := []string{}
+	foreign := 0
 	for _, b := range bans {
 		if !strings.Contains(b.Reason, "境外") {
 			continue
 		}
+		foreign++
 		r := shortRegion(b.Location)
-		if r == "" || r == "-" {
+		if r == "" || r == "-" || r == "未知" {
 			r = "未知"
 		}
 		if counts[r] == 0 {
@@ -94,29 +97,17 @@ func RenderRegionAggHTML(bans []UsernameBan) string {
 		}
 		counts[r]++
 	}
-	if len(order) == 0 {
+	if foreign == 0 {
 		return ""
 	}
-	// 按数量降序
 	sort.Slice(order, func(i, j int) bool { return counts[order[i]] > counts[order[j]] })
-	maxN := counts[order[0]]
 
+	const topN = 5
 	var sb strings.Builder
 	sb.WriteString("<div class=\"region-agg\" id=\"region-agg\">")
-	foreign := []UsernameBan{}
-	for _, b := range bans {
-		if strings.Contains(b.Reason, "境外") {
-			foreign = append(foreign, b)
-		}
-	}
-	fmtF(&sb, "<span class=\"region-chip active\" data-region=\"*\" onclick=\"filterRegion('*')\">全部 %d</span>", len(foreign))
-	for _, r := range order {
-		n := counts[r]
-		bars := n * 8 / maxN
-		if bars < 1 {
-			bars = 1
-		}
-		bar := strings.Repeat("▰", bars) + strings.Repeat("▱", 8-bars)
+	fmtF(&sb, "<span class=\"region-chip active\" data-region=\"*\" onclick=\"filterRegion('*')\">全部 %d</span>", foreign)
+
+	for i, r := range order {
 		short := r
 		runes := []rune(short)
 		titleAttr := ""
@@ -124,7 +115,20 @@ func RenderRegionAggHTML(bans []UsernameBan) string {
 			short = string(runes[:10]) + "…"
 			titleAttr = fmt.Sprintf(" title=\"%s\"", r)
 		}
-		fmtF(&sb, "<span class=\"region-chip\" data-region=\"%s\"%s onclick=\"filterRegion(this.dataset.region)\">%s <span class=\"agg-bar\">%s</span> %d</span>", r, titleAttr, short, bar, n)
+		if i >= topN {
+			fmtF(&sb, "<span class=\"region-chip region-extra\" data-region=\"%s\"%s style=\"display:none\" onclick=\"filterRegion(this.dataset.region)\">%s %d</span>", r, titleAttr, short, counts[r])
+		} else {
+			fmtF(&sb, "<span class=\"region-chip\" data-region=\"%s\"%s onclick=\"filterRegion(this.dataset.region)\">%s %d</span>", r, titleAttr, short, counts[r])
+		}
+	}
+
+	if extra := len(order) - topN; extra > 0 {
+		extraN := 0
+		for _, r := range order[topN:] {
+			extraN += counts[r]
+		}
+		fmtF(&sb, "<span class=\"region-chip region-toggle\" onclick=\"toggleRegionExtra(true)\">其他 %d 个地区 · %d ▾</span>", extra, extraN)
+		sb.WriteString("<span class=\"region-chip region-collapse\" style=\"display:none\" onclick=\"toggleRegionExtra(false)\">收起 ▴</span>")
 	}
 	sb.WriteString("</div>")
 	return sb.String()

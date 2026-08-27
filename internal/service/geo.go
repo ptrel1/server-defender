@@ -158,8 +158,54 @@ func parsePconline(ip, raw string) (GeoInfo, bool) {
 		}
 		return GeoInfo{IP: ip, IsCN: true, Country: "中国", Location: loc, ISP: addr}, true
 	}
-	return GeoInfo{IP: ip, IsCN: false, Country: "境外", Location: addr, ISP: ""}, true
+	return GeoInfo{IP: ip, IsCN: false, Country: "境外", Location: normalizeForeignRegion(addr), ISP: addr}, true
 }
+
+// normalizeForeignRegion 将境外归属地压缩为「国家（一级行政区）」粒度。
+// pconline 境外格式杂糅 ISP/城市/机构名，导致聚合 chip 粒度不齐（如“瑞士洛桑联邦理工学院”）。
+// 这里提取已知国家/地区名作为归一化结果，ISP 细节保留在 ISP 字段供表格 hover。
+func normalizeForeignRegion(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "未知"
+	}
+	// 常见国家/地区词表（长词优先匹配）
+	countries := []string{
+		"美国", "英国", "法国", "德国", "意大利", "西班牙", "荷兰", "比利时", "瑞典", "瑞士",
+		"挪威", "芬兰", "丹麦", "波兰", "奥地利", "希腊", "葡萄牙", "爱尔兰", "捷克", "匈牙利",
+		"罗马尼亚", "保加利亚", "俄罗斯", "乌克兰", "土耳其", "以色列", "阿联酋", "沙特阿拉伯",
+		"印度", "日本", "韩国", "越南", "泰国", "新加坡", "马来西亚", "印度尼西亚", "菲律宾",
+		"巴西", "阿根廷", "智利", "哥伦比亚", "墨西哥", "加拿大", "澳大利亚", "新西兰",
+		"南非", "埃及", "尼日利亚", "蒙古", "哈萨克斯坦", "亚太地区",
+	}
+	for _, c := range countries {
+		if strings.Contains(s, c) {
+			// 抓到国家后再尝试带上紧随的省州信息（如"美国得克萨斯州"），限制总长
+			idx := strings.Index(s, c) + len([]rune(c))
+			runes := []rune(s)
+			tail := ""
+			for j := idx; j < len(runes) && len([]rune(tail)) < 5; j++ {
+				r := runes[j]
+				if r == ' ' || r == '(' || isASCII(r) {
+					break
+				}
+				tail += string(r)
+			}
+			if tail != "" && strings.HasSuffix(tail, "州") || tail == "地区" || strings.HasSuffix(tail, "省") {
+				return c + tail
+			}
+			return c
+		}
+	}
+	// 未识别的境外地名：截断到 8 字符，避免机构名撑爆聚合条
+	runes := []rune(s)
+	if len(runes) > 8 {
+		return string(runes[:8])
+	}
+	return s
+}
+
+func isASCII(r rune) bool { return r < 128 }
 
 func parseIPAPI(ip, raw string) (GeoInfo, bool) {
 	var d struct {
@@ -174,7 +220,10 @@ func parseIPAPI(ip, raw string) (GeoInfo, bool) {
 		return GeoInfo{}, false
 	}
 	isCN := d.CountryCode == "CN" || d.CountryCode == "HK" || d.CountryCode == "MO" || d.CountryCode == "TW"
-	loc := strings.TrimSpace(d.Country + " " + d.RegionName + " " + d.City)
+	loc := strings.TrimSpace(d.Country)
+	if loc == "" {
+		loc = strings.TrimSpace(d.Country + " " + d.RegionName + " " + d.City)
+	}
 	return GeoInfo{IP: ip, IsCN: isCN, Country: d.Country, Location: loc, ISP: d.ISP}, true
 }
 
