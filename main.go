@@ -102,6 +102,24 @@ func main() {
 	// 前端日志上报（浏览器 JS 异常 / 环境快照，排查本地渲染问题）
 	mux.HandleFunc("/api/client_log", handler.PostClientLog)
 
+	// 调试触发采样：立即产生一个历史采样点（仅本机/受信来源用，用于排障避免等待采样周期）
+	mux.HandleFunc("/api/dev/sample", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			handler.WriteJSON(w, map[string]interface{}{"code": 1, "msg": "method not allowed"})
+			return
+		}
+		p := service.SampleHistory()
+		points := service.GetHistoryPoints()
+		points = append(points, p)
+		const retain30d = 4320 // 与服务端 historyRetain 一致（30 天）
+		if len(points) > retain30d {
+			points = points[len(points)-retain30d:]
+		}
+		_ = service.SaveHistoryPoints(points)
+		handler.WriteJSON(w, map[string]interface{}{"code": 0, "msg": "sampled",
+			"tcp_total": p.TCPTotal, "rx_kbs": int(p.RXRate / 1024), "tx_kbs": int(p.TXRate / 1024)})
+	})
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8899"

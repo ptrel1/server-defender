@@ -89,12 +89,16 @@ var (
 	nicCacheMu    sync.Mutex
 	nicPrev       = map[string]NicStats{}
 	nicCacheTime  time.Time
-	connCacheMu   sync.Mutex
-	connCacheTime time.Time
-	connCache     *ConnStats
+	connCacheMu    sync.Mutex
+	connCacheTime  time.Time
+	connCache      *ConnStats
 	frpsCacheTime time.Time
 	frpsCache     map[string]interface{}
 	frpsCacheMu   sync.Mutex
+	// 历史采样独立差分基准：不受实时 KPI 频繁刷新 nicCacheTime 影响
+	histRateMu   sync.Mutex
+	histPrev     = map[string]NicStats{}
+	histPrevTime time.Time
 )
 
 // readProcNetDev 读取 /proc/net/dev。
@@ -394,17 +398,36 @@ func SaveAlerts(al []Alert) error {
 	return atomicWrite(alertsFile, b)
 }
 
-// SampleHistory 采集一个历史节点。
+// SampleHistory 采集一个历史节点。速率用独立差分基准计算，
+// 避免被高频的实时 KPI 调用压缩采样窗口（否则历史速率恒为 0）。
 func SampleHistory() HistoryPoint {
-	nics := NicRateStats(false)
-	conn := ConnStatsSnapshot()
+	now := time.Now()
+	cur := readProcNetDev()
+	histRateMu.Lock()
+	defer histRateMu.Unlock()
+
 	var rx, tx float64
-	for _, n := range nics {
-		rx += n.RXRate
-		tx += n.TXRate
+	dt := 0.0
+	if !histPrevTime.IsZero() {
+		dt = now.Sub(histPrevTime).Seconds()
 	}
-	return HistoryPoint{Time: time.Now().Format("2006-01-02 15:04:05"),
-		Ts: time.Now().Unix(), RXRate: rx, TXRate: tx,
+	for nic, v := range cur {
+		if !v.Physical {
+			continue
+		}
+		if dt > 1.0 { // 跨采样周期（≥1s）才计算速率，避免 dt≈0 产生 0
+			if p, ok := histPrev[nic]; ok {
+				rx += maxF(0, float64(v.RXBytes-p.RXBytes))/dt
+				tx += maxF(0, float64(v.TXBytes-p.TXBytes))/dt
+			}
+		}
+		histPrev[nic] = v
+	}
+	histPrevTime = now
+
+	conn := ConnStatsSnapshot()
+	return HistoryPoint{Time: now.Format("2006-01-02 15:04:05"),
+		Ts: now.Unix(), RXRate: rx, TXRate: tx,
 		TCPTotal: conn.TCPTotal, UDPTotal: conn.UDPTotal,
 		SynRecv: conn.SynRecv, Established: conn.Established}
 }
