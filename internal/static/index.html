@@ -89,6 +89,16 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 .nic-row { display:flex; justify-content:space-between; align-items:center; padding:8px 4px; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px; }
 .nic-virtual { opacity:0.55; font-size:12px; }
 .toggle-btn { padding:4px 10px; border-radius:6px; font-size:11px; background:rgba(255,255,255,0.08); color:var(--text-secondary); border:1px solid rgba(255,255,255,0.1); cursor:pointer; }
+/* ===== Tab 分页导航（渐进披露，按任务场景分组）===== */
+.tab-nav { display:flex; gap:6px; margin-bottom:20px; background:var(--panel-bg); backdrop-filter:blur(24px); border:1px solid var(--panel-border); border-radius:14px; padding:6px; width:fit-content; }
+.tab-btn { display:inline-flex; align-items:center; gap:7px; padding:9px 20px; border-radius:10px; font-size:13.5px; font-weight:600; color:var(--text-secondary); cursor:pointer; border:none; background:transparent; transition:all 0.22s cubic-bezier(0.16,1,0.3,1); }
+.tab-btn:hover { color:var(--text-primary); background:rgba(255,255,255,0.06); }
+.tab-btn.active { background:linear-gradient(135deg,var(--apple-blue),#0066cc); color:#fff; box-shadow:0 2px 12px rgba(10,132,255,0.35); }
+.tab-btn .tab-dot { width:7px; height:7px; border-radius:50%; background:rgba(255,69,58,0.85); display:none; }
+.tab-btn.has-alert .tab-dot { display:inline-block; }
+.tab-page { display:none; }
+.tab-page.active { display:block; animation:fadeUp 0.28s cubic-bezier(0.16,1,0.3,1); }
+@keyframes fadeUp { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 </style>
 </head>
 <body>
@@ -116,6 +126,16 @@ tr:hover td { background:rgba(255,255,255,0.03); }
   <div class="metric-card"><div class="metric-label">📡 实时上下行</div><div class="metric-value text-blue" id="stat-net-rx">-</div><div class="metric-sub">当前总流量速率</div></div>
 </section>
 
+<!-- Tab 分页导航 -->
+<nav class="tab-nav">
+  <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">🛡 总览</button>
+  <button class="tab-btn" data-tab="defense" onclick="switchTab('defense')"><span class="tab-dot"></span>🔐 防御</button>
+  <button class="tab-btn" data-tab="network" onclick="switchTab('network')">🌐 网络</button>
+  <button class="tab-btn" data-tab="host" onclick="switchTab('host')"><span class="tab-dot"></span>⚡ 主机</button>
+</nav>
+
+<!-- ============ Tab: 总览（态势一屏）============ -->
+<section class="tab-page active" id="page-overview">
 <!-- 网络监控横幅区 -->
 <section style="display:flex;flex-direction:column;gap:20px;margin-bottom:20px;">
   <!-- 带宽与告警 -->
@@ -128,16 +148,29 @@ tr:hover td { background:rgba(255,255,255,0.03); }
     <div id="nic-list"></div>
   </div>
   <div class="glass-card">
-    <div class="card-header"><div class="card-title">🚨 网络异常告警</div><div class="count-badge" id="badge-alerts">0</div></div>
-    <div id="container-alerts"><div class="empty-state"><div class="empty-icon">⌛</div><span>检测中...</span></div></div>
-  </div>
-  <div class="glass-card">
     <div class="card-header"><div class="card-title">📈 24 小时带宽 & 连接趋势</div></div>
     <div class="chart-wrap"><canvas id="statusChart"></canvas></div>
   </div>
 </section>
 
-<!-- 主工作台双栏 -->
+<main class="main-workspace">
+  <div class="column">
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🕒 实时探测与攻击事件流</div></div>
+      <div id="container-recent"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+  </div>
+  <div class="column">
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🏅 攻击来源 TOP IP</div></div>
+      <div id="container-top-ips"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+  </div>
+</main>
+</section>
+
+<!-- ============ Tab: 防御 ============ -->
+<section class="tab-page" id="page-defense">
 <main class="main-workspace">
   <div class="column">
     <div class="glass-card">
@@ -148,6 +181,28 @@ tr:hover td { background:rgba(255,255,255,0.03); }
       <div class="card-header"><div class="card-title">🛡️ frps 隧道 fail2ban 动态封禁</div><div class="count-badge" id="badge-frps-f2b">0</div></div>
       <div id="container-frps-f2b"><div class="empty-state"><div class="empty-icon">✅</div><span>暂无动态封禁 IP</span></div></div>
     </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">📋 本机 SSH fail2ban 封禁态势</div><div class="count-badge" id="badge-f2b">0</div></div>
+      <div id="container-f2b"><div class="empty-state"><div class="empty-icon">✅</div><span>本机直连 22 端口无异常</span></div></div>
+    </div>
+  </div>
+  <div class="column">
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🎯 被探测爆破账号排行</div></div>
+      <div id="container-top-users"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🕒 实时探测与攻击事件流</div></div>
+      <div id="container-recent-2"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+  </div>
+</main>
+</section>
+
+<!-- ============ Tab: 网络 ============ -->
+<section class="tab-page" id="page-network">
+<main class="main-workspace">
+  <div class="column">
     <div class="glass-card">
       <div class="card-header"><div class="card-title">🌐 网络连接分析</div></div>
       <div class="card-title2" style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">TCP 状态分布</div>
@@ -160,20 +215,23 @@ tr:hover td { background:rgba(255,255,255,0.03); }
       <div id="container-net-listens"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
     </div>
   </div>
-
   <div class="column">
     <div class="glass-card">
       <div class="card-header"><div class="card-title">🔀 frps 隧道流量统计</div></div>
       <div id="container-frps"><div class="empty-state"><div class="empty-icon">⌛</div><span>加载中...</span></div></div>
     </div>
     <div class="glass-card">
-      <div class="card-header"><div class="card-title">🕒 实时探测与攻击事件流</div></div>
-      <div id="container-recent"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+      <div class="card-header"><div class="card-title">🚨 网络异常告警</div><div class="count-badge" id="badge-alerts">0</div></div>
+      <div id="container-alerts"><div class="empty-state"><div class="empty-icon">⌛</div><span>检测中...</span></div></div>
     </div>
-    <div class="glass-card">
-      <div class="card-header"><div class="card-title">🏅 攻击来源 TOP IP</div></div>
-      <div id="container-top-ips"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
-    </div>
+  </div>
+</main>
+</section>
+
+<!-- ============ Tab: 主机 ============ -->
+<section class="tab-page" id="page-host">
+<main class="main-workspace">
+  <div class="column">
     <div class="glass-card">
       <div class="card-header"><div class="card-title">🔥 实时 TOP 负载进程监控</div></div>
       <div id="container-top-procs"><div class="empty-state"><div class="empty-icon">⌛</div><span>扫描系统负载中...</span></div></div>
@@ -182,16 +240,15 @@ tr:hover td { background:rgba(255,255,255,0.03); }
       <div class="card-header"><div class="card-title">⚡ 异常失控进程自愈收割战报</div><div class="count-badge" id="badge-reaper">0</div></div>
       <div id="container-reaper"><div class="empty-state"><div class="empty-icon">✅</div><span>系统平稳，未出现失控死循环孤儿进程</span></div></div>
     </div>
+  </div>
+  <div class="column">
     <div class="glass-card">
-      <div class="card-header"><div class="card-title">🎯 被探测爆破账号排行</div></div>
-      <div id="container-top-users"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
-    </div>
-    <div class="glass-card">
-      <div class="card-header"><div class="card-title">📋 本机 SSH fail2ban 封禁态势</div><div class="count-badge" id="badge-f2b">0</div></div>
-      <div id="container-f2b"><div class="empty-state"><div class="empty-icon">✅</div><span>本机直连 22 端口无异常</span></div></div>
+      <div class="card-header"><div class="card-title">📈 负载趋势参考（随总览图同步）</div></div>
+      <div class="chart-wrap"><canvas id="statusChart2"></canvas></div>
     </div>
   </div>
 </main>
+</section>
 
 <!-- 手动封禁模态框 -->
 <div class="modal" id="blockModal">
@@ -279,6 +336,12 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 let showVirtual = false;
 let historyChart = null;
 
+// 启动时恢复上次的 Tab（会话连续性）
+try {
+  const saved = localStorage.getItem('defender_tab');
+  if (saved && document.getElementById('page-' + saved)) switchTab(saved);
+} catch(e) {}
+
 function fmtRate(bps) {
   if (bps >= 1048576) return (bps/1048576).toFixed(2) + ' MB/s';
   if (bps >= 1024) return (bps/1024).toFixed(1) + ' KB/s';
@@ -311,7 +374,11 @@ async function fetchData() {
     document.getElementById('container-alerts').innerHTML = data.alerts_html;
     document.getElementById('container-unames').innerHTML = data.unames_html;
     document.getElementById('container-frps-f2b').innerHTML = data.frps_f2b_html;
-    document.getElementById('container-recent').innerHTML = data.recent_html;
+    // 事件流在「总览」与「防御」两个 Tab 各渲染一份
+    const recentHtml = data.recent_html;
+    document.getElementById('container-recent').innerHTML = recentHtml;
+    const r2 = document.getElementById('container-recent-2');
+    if (r2) r2.innerHTML = recentHtml;
     document.getElementById('container-top-ips').innerHTML = data.top_ips_html;
     document.getElementById('container-top-procs').innerHTML = data.top_procs_html;
     document.getElementById('container-reaper').innerHTML = data.reaper_events_html;
@@ -324,7 +391,31 @@ async function fetchData() {
     document.getElementById('update-time').textContent = data.time;
 
     renderChart(data.history || []);
+
+    // 防御/主机 Tab 红点提醒（有封禁或收割动作时点亮）
+    setAlertDot('defense', (data.unames_count||0) + countRows(data.f2b_html) > 0);
+    setAlertDot('host', (data.reaper_count||0) > 0);
   } catch (err) { console.error('Fetch error:', err); }
+}
+
+// 从表格 HTML 粗略统计行数（用于红点判断）
+function countRows(html) {
+  if (!html || html.indexOf('<table') === -1) return 0;
+  return (html.match(/<tr>/g) || []).length - 1; // 减去表头行
+}
+function setAlertDot(tab, on) {
+  const btn = document.querySelector('.tab-btn[data-tab="' + tab + '"]');
+  if (btn) btn.classList.toggle('has-alert', !!on);
+}
+
+// ===== Tab 切换 =====
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab-page').forEach(p => p.classList.toggle('active', p.id === 'page-' + name));
+  try { localStorage.setItem('defender_tab', name); } catch(e) {}
+  // 切走/切回时让当前页图表重排（隐藏容器内 canvas 尺寸为 0 的问题）
+  if (name === 'overview' && historyChart1) historyChart1.resize();
+  if ((name === 'host' || name === 'overview') && historyChart2) historyChart2.resize();
 }
 
 function renderChart(history) {
@@ -332,11 +423,22 @@ function renderChart(history) {
   const rx = history.map(p => +(p.rx_rate/1024).toFixed(1));
   const tx = history.map(p => +(p.tx_rate/1024).toFixed(1));
   const tcp = history.map(p => p.tcp_total);
-  const ctx = document.getElementById('statusChart');
+  // 同一趋势图渲染到「总览」与「主机」两个 Tab 的 canvas 上
+  renderOneChart('statusChart', labels, rx, tx, tcp);
+  renderOneChart('statusChart2', labels, rx, tx, tcp);
+}
+
+function renderOneChart(canvasId, labels, rx, tx, tcp) {
+  const ctx = document.getElementById(canvasId);
   if (!ctx) return;
-  if (historyChart) { historyChart.data.labels = labels; historyChart.data.datasets[0].data = rx; historyChart.data.datasets[1].data = tx; historyChart.data.datasets[2].data = tcp; historyChart.update(); return; }
-  let maxTcp = 1; tcp.forEach(v => { if (v > maxTcp) maxTcp = v; });
-  historyChart = new Chart(ctx, {
+  const store = canvasId === 'statusChart' ? 'c1' : 'c2';
+  if (chartStore[store]) {
+    const c = chartStore[store];
+    c.data.labels = labels; c.data.datasets[0].data = rx; c.data.datasets[1].data = tx; c.data.datasets[2].data = tcp;
+    c.update('none');
+    return;
+  }
+  chartStore[store] = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets: [
       { label:'入站 KB/s', data:rx, borderColor:'#0a84ff', tension:0.3, pointRadius:0, borderWidth:2 },
@@ -355,6 +457,10 @@ function renderChart(history) {
     }
   });
 }
+const chartStore = {};
+let historyChart1 = null, historyChart2 = null;
+// 延迟绑定 resize 引用（图表创建后）
+setTimeout(() => { historyChart1 = chartStore.c1; historyChart2 = chartStore.c2; }, 300);
 
 function toggleNic() { showVirtual = !showVirtual; fetchData(); }
 
