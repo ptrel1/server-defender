@@ -60,6 +60,9 @@ func DashboardData(includeVirtual bool) map[string]interface{} {
 		"top_users_html":         RenderTopUsersHTML(lastb.TopUsers),
 		"recent_html":            RenderRecentHTML(lastb.Recent),
 		"unames_html":            RenderUsernamesHTML(unames),
+		"foreign_bans_count":     countForeignBans(unames),
+		"foreign_bans_html":      RenderForeignBansHTML(unames),
+		"region_agg_html":        RenderRegionAggHTML(unames),
 		"top_procs_html":         RenderTopProcsHTML(),
 		"reaper_events_html":     RenderReaperEventsHTML(),
 		// NetMon

@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"server-defender/internal/service"
@@ -46,21 +48,131 @@ func UsernameBans() []UsernameBan {
 	return bans
 }
 
-// RenderUsernamesHTML 渲染境外拦截与用户名封禁卡片。
+// RenderUsernamesHTML 渲染「用户名风暴封禁」卡片（仅境内 IP 爆破类）。
 func RenderUsernamesHTML(bans []UsernameBan) string {
-	if len(bans) == 0 {
-		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>系统平稳，暂无永久封禁 IP</span></div>"
-	}
-	var sb strings.Builder
-	sb.WriteString("<table><tr><th>#</th><th>来源 IP</th><th>拦截策略 / 原因</th><th>归属地</th><th>时间</th></tr>")
-	for i, b := range bans {
-		cls := "tag-danger"
+	var storm []UsernameBan
+	for _, b := range bans {
 		if !strings.Contains(b.Reason, "境外") {
+			storm = append(storm, b)
+		}
+	}
+	if len(storm) == 0 {
+		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>无国内 IP 用户名风暴记录</span></div>"
+	}
+	return renderBanTable(storm)
+}
+
+// RenderForeignBansHTML 渲染「境外 IP 阻断」主表。
+func RenderForeignBansHTML(bans []UsernameBan) string {
+	var foreign []UsernameBan
+	for _, b := range bans {
+		if strings.Contains(b.Reason, "境外") {
+			foreign = append(foreign, b)
+		}
+	}
+	if len(foreign) == 0 {
+		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>暂无境外拦截记录</span></div>"
+	}
+	return renderBanTable(foreign)
+}
+
+// RenderRegionAggHTML 渲染境外封禁的归属地聚合条（点击筛选，渐进披露）。
+// 输出形如：保加利亚 [▓▓▓▓] 20 · 越南 [▓▓▓] 13 ...，chip 带 data-region 可被前端点击过滤。
+func RenderRegionAggHTML(bans []UsernameBan) string {
+	counts := map[string]int{}
+	order := []string{}
+	for _, b := range bans {
+		if !strings.Contains(b.Reason, "境外") {
+			continue
+		}
+		r := shortRegion(b.Location)
+		if r == "" || r == "-" {
+			r = "未知"
+		}
+		if counts[r] == 0 {
+			order = append(order, r)
+		}
+		counts[r]++
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	// 按数量降序
+	sort.Slice(order, func(i, j int) bool { return counts[order[i]] > counts[order[j]] })
+	maxN := counts[order[0]]
+
+	var sb strings.Builder
+	sb.WriteString("<div class=\"region-agg\" id=\"region-agg\">")
+	foreign := []UsernameBan{}
+	for _, b := range bans {
+		if strings.Contains(b.Reason, "境外") {
+			foreign = append(foreign, b)
+		}
+	}
+	fmtF(&sb, "<span class=\"region-chip active\" data-region=\"*\" onclick=\"filterRegion('*')\">全部 %d</span>", len(foreign))
+	for _, r := range order {
+		n := counts[r]
+		bars := n * 8 / maxN
+		if bars < 1 {
+			bars = 1
+		}
+		bar := strings.Repeat("▰", bars) + strings.Repeat("▱", 8-bars)
+		short := r
+		runes := []rune(short)
+		titleAttr := ""
+		if len(runes) > 10 {
+			short = string(runes[:10]) + "…"
+			titleAttr = fmt.Sprintf(" title=\"%s\"", r)
+		}
+		fmtF(&sb, "<span class=\"region-chip\" data-region=\"%s\"%s onclick=\"filterRegion(this.dataset.region)\">%s <span class=\"agg-bar\">%s</span> %d</span>", r, titleAttr, short, bar, n)
+	}
+	sb.WriteString("</div>")
+	return sb.String()
+}
+
+// countForeignBans 统计境外拦截条数。
+func countForeignBans(bans []UsernameBan) int {
+	n := 0
+	for _, b := range bans {
+		if strings.Contains(b.Reason, "境外") {
+			n++
+		}
+	}
+	return n
+}
+
+// shortRegion 压缩超长归属地为地区主体名。
+func shortRegion(loc string) string {
+	loc = strings.TrimSpace(loc)
+	// "美国加利福尼亚州洛杉矶Level3通信(DIA)" → 取国家部分已由 geo 层保证较长，这里再做显示级截断的取前缀逻辑交给前端；
+	// 服务端仅剥离括号备注与运营商尾巴常见词。
+	for _, cut := range []string{"Google云计算数据中心", "云计算数据中心", "Level3通信(DIA)", "(DIA)", "社会保险安全部"} {
+		loc = strings.ReplaceAll(loc, cut, "")
+	}
+	return loc
+}
+
+func renderBanTable(list []UsernameBan) string {
+	var sb strings.Builder
+	sb.WriteString("<table><tr><th>#</th><th>来源 IP</th><th>归属地</th><th>触发规则</th><th>时间</th></tr>")
+	for i, b := range list {
+		cls := "tag-danger"
+		reason := b.Reason
+		if idx := strings.Index(reason, "("); idx > 0 && strings.HasPrefix(reason, "境外IP拦截") {
+			reason = reason[idx+1 : len(reason)-1]
+		} else if strings.Contains(reason, "不同账号数") {
 			cls = "tag-warning"
+			reason = "账号风暴"
 		}
 		loc := b.Location
-		fmtF(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s</td><td><span class=\"tag %s\">%s</span></td><td style=\"color:var(--text-primary)\">%s</td><td class=\"time-cell\">%s</td></tr>",
-			i+1, b.IP, cls, b.Reason, loc, b.Time)
+		runes := []rune(loc)
+		titleAttr := ""
+		if len(runes) > 12 {
+			loc = string(runes[:12]) + "…"
+			titleAttr = fmt.Sprintf(" title=\"%s\"", b.Location)
+		}
+		fmtF(&sb, "<tr class=\"ban-row\" data-region=\"%s\"><td>%d</td><td class=\"ip-cell\">%s</td><td%s style=\"color:var(--text-primary)\">%s</td><td><span class=\"tag %s\">%s</span></td><td class=\"time-cell\">%s</td></tr>",
+			shortRegion(loc), i+1, b.IP, titleAttr, loc, cls, reason, b.Time)
 	}
 	return sb.String() + "</table>"
 }
