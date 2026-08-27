@@ -23,7 +23,7 @@ const (
 	alertCooldown   = 1800 * time.Second
 
 	synThreshold    = 30
-	connThreshold   = 5000
+	connThreshold   = 2000
 	ipConnThreshold = 80
 	ipScanThreshold = 30
 	bwThreshold     = 50 * 1024 * 1024
@@ -224,7 +224,12 @@ func buildConnStats() ConnStats {
 			state := fields[0]
 			peerHost, _ := splitHostPort(fields[4])
 			_, localPort := splitHostPort(fields[3])
-			tcpTotal++
+			// tcp_total 口径：ESTAB + TIME-WAIT（贴近直觉的活动+回收量）。
+			// LISTEN 已在上面跳过；SYN-RECV/FIN-* 等过渡态也计入总数但不 dominate 曲线，
+			// 这样尖峰仍能反映真实风暴（半开连接暴涨），而日常抖动大幅平滑。
+			if state == "ESTAB" || state == "TIME-WAIT" {
+				tcpTotal++
+			}
 			statesMap[state]++
 			if peerHost != "" && peerHost != "127.0.0.1" && peerHost != "::1" && peerHost != "0.0.0.0" && peerHost != "*" {
 				ipCount[peerHost]++
@@ -404,22 +409,28 @@ func SampleHistory() HistoryPoint {
 		SynRecv: conn.SynRecv, Established: conn.Established}
 }
 
-// HistoryLoop 后台 10 分钟采样。
+// HistoryLoop 后台 10 分钟采样；启动时立即补采一个点，避免重启后图表空窗 10 分钟。
 func HistoryLoop(done <-chan struct{}) {
 	ticker := time.NewTicker(historyInterval)
 	defer ticker.Stop()
+	sample := func() {
+		points := GetHistoryPoints()
+		p := SampleHistory()
+		points = append(points, p)
+		if len(points) > historyRetain {
+			points = points[len(points)-historyRetain:]
+		}
+		_ = SaveHistoryPoints(points)
+	}
+	if historyInterval > 0 {
+		sample() // 启动首采
+	}
 	for {
 		select {
 		case <-done:
 			return
 		case <-ticker.C:
-			points := GetHistoryPoints()
-			p := SampleHistory()
-			points = append(points, p)
-			if len(points) > historyRetain {
-				points = points[len(points)-historyRetain:]
-			}
-			_ = SaveHistoryPoints(points)
+			sample()
 		}
 	}
 }

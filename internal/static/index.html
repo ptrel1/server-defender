@@ -488,7 +488,10 @@ function renderOneChart(canvasId, labels, rx, tx, tcp) {
         y1:{ position:'right', beginAtZero:true, grid:{ drawOnChartArea:false }, ticks:{ color:'#bf5af2' } },
         x:{ grid:{ display:false }, ticks:{ color:'#64748b', maxTicksLimit:8 } }
       },
-      plugins:{ legend:{ labels:{ color:'#94a3b8' } } }
+      plugins:{ legend:{ labels:{ color:'#94a3b8' } }, tooltip:{ callbacks:{
+        // 明确口径：ESTAB+TIME-WAIT
+        footer: () => '口径: ESTAB + TIME-WAIT'
+      } } }
     }
   });
 }
