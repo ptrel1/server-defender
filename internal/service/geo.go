@@ -56,11 +56,44 @@ func isPrivateOrLoopback(ipStr string) bool {
 	return false
 }
 
-// QueryGeo 解析 IP 归属地，带本地缓存与多源接口降级。
+// QueryGeo 解析 IP 归属地：内存缓存 → 磁盘缓存 → 远程多源降级。
 func QueryGeo(ip string) GeoInfo {
 	if isPrivateOrLoopback(ip) {
 		return GeoInfo{IP: ip, IsCN: true, Country: "局域网/回环", Location: "本地", ISP: "Local"}
 	}
+	if e, ok := geoMem.Load(ip); ok {
+		if en := e.(geoEntry); time.Now().Before(en.exp) {
+			return en.info
+		}
+	}
+	info := queryGeoDisk(ip)
+	geoMem.Store(ip, geoEntry{info: info, exp: time.Now().Add(time.Duration(Conf().GeoMemTTLH) * time.Hour)})
+	return info
+}
+
+// QueryGeoFast 非阻塞取归属地（面板展示用）：命中缓存直接返回；
+// 未命中返回 false 并触发后台预取，下次刷新即可见。
+func QueryGeoFast(ip string) (string, bool) {
+	if isPrivateOrLoopback(ip) {
+		return "本地", true
+	}
+	if e, ok := geoMem.Load(ip); ok {
+		if en := e.(geoEntry); time.Now().Before(en.exp) {
+			return en.info.Location, true
+		}
+	}
+	go func() { _ = QueryGeo(ip) }()
+	return "", false
+}
+
+type geoEntry struct {
+	info GeoInfo
+	exp  time.Time
+}
+
+var geoMem sync.Map
+
+func queryGeoDisk(ip string) GeoInfo {
 	// 读共享的单例缓存
 	info, ok := readGeoCache(ip)
 	if ok {
@@ -113,8 +146,8 @@ func queryGeoRemote(ip string) GeoInfo {
 			return g
 		}
 	}
-	// 3. 兜底：未知但保守不误伤
-	return GeoInfo{IP: ip, IsCN: true, Country: "未知", Location: "未识别", ISP: ""}
+	// 3. 兜底：fail-close——查询失败按未知境外处理（封禁场景宁严勿漏；白名单IP在调用方已提前豁免）
+	return GeoInfo{IP: ip, IsCN: false, Country: "未知", Location: "归属地未识别", ISP: ""}
 }
 
 func httpGet(url string) (string, error) {

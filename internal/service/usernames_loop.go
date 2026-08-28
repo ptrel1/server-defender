@@ -27,17 +27,17 @@ type IPRecord struct {
 }
 
 const (
-	stateFile  = "usernames.json"
-	banFile    = "perm_ban.txt"
-	relayHost  = "root@47.98.244.173" // 中转机地址
-	threshold  = 100                  // 用户名风暴阈值
-	saveEvery  = 30 * time.Second
+	stateFile = "usernames.json"
+	banFile   = "perm_ban.txt"
+	saveEvery = 30 * time.Second
 )
 
 var (
 	reFail   = regexp.MustCompile(`Failed password for (?:invalid user )?(\S+) from ([\d\.:a-fA-F]+) port`)
 	reAccept = regexp.MustCompile(`Accepted publickey for (\S+) from ([\d\.:a-fA-F]+)`)
-	ignoreIP = map[string]bool{"127.0.0.1": true, "::1": true, "127.0.0.2": true}
+	// 密码登录成功：境外 IP 无论密码对错都要封禁（20260828 事件教训）
+	reAcceptPass = regexp.MustCompile(`Accepted password for (?:invalid user )?(\S+) from ([\d\.:a-fA-F]+)`)
+	ignoreIP     = map[string]bool{"127.0.0.1": true, "::1": true, "127.0.0.2": true}
 
 	stateMu sync.Mutex
 )
@@ -94,17 +94,28 @@ func isBannedLocal(ip string) bool {
 	return runOK("iptables", "-C", "INPUT", "-s", ip, "-j", "DROP")
 }
 
-// banLocal 本机下发永久封禁。
+// banLocal 本机下发永久封禁（IPv4/IPv6 自适应）。
 func banLocal(ip string) {
-	_ = runOK("iptables", "-A", "INPUT", "-s", ip, "-j", "DROP")
-	_ = runOK("iptables-save")
+	bin := "iptables"
+	if strings.Contains(ip, ":") {
+		bin = "ip6tables"
+	}
+	_ = runOK(bin, "-A", "INPUT", "-s", ip, "-j", "DROP")
+	_ = runOK(bin+"-save")
 }
 
-// syncRelay 同步封禁到中转机。
+// syncRelay 同步封禁到中转机（本机即中转机时跳过，避免自己 ssh 自己）。
 func syncRelay(ip string) {
-	cmd := fmt.Sprintf("iptables -C INPUT -s %s -j DROP >/dev/null 2>&1 || iptables -A INPUT -s %s -j DROP; iptables-save >/dev/null", ip, ip)
+	if isRelaySelf() {
+		return
+	}
+	bin := "iptables"
+	if strings.Contains(ip, ":") {
+		bin = "ip6tables"
+	}
+	cmd := fmt.Sprintf("%s -C INPUT -s %s -j DROP >/dev/null 2>&1 || %s -A INPUT -s %s -j DROP; iptables-save >/dev/null", bin, ip, bin, ip)
 	_ = exec.Command("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-		"-o", "ConnectTimeout=8", relayHost, cmd).Run()
+		"-o", "ConnectTimeout=8", Conf().RelayHost, cmd).Run()
 }
 
 // applyAllBans 启动时重放所有已封 IP。
@@ -119,13 +130,15 @@ func applyAllBans(s *UsernamesState) {
 
 // UsernamesLoop 常驻循环：跟随 journalctl sshd 日志，实时封禁境外/风暴 IP。
 func UsernamesLoop(done <-chan struct{}) {
+	WriteDefaultConfig()
 	state := loadUsernamesState()
 	applyAllBans(state)
 	lastSave := time.Now()
 
 	for {
 		// 每次迭代重新启动 journalctl -f(可重启续写)；配合 done 退出
-		proc := exec.Command("journalctl", "-f", "-u", "sshd", "-o", "cat")
+		// 同时跟 sshd(RHEL/arch) 与 ssh(Debian/Ubuntu) 两个 unit 名，避免中转机上空转
+		proc := exec.Command("journalctl", "-f", "-u", "sshd", "-u", "ssh", "-o", "cat")
 		proc.Stdout = nil // 用 pipe 逐行读
 		stdout, err := proc.StdoutPipe()
 		if err != nil {
@@ -182,7 +195,7 @@ func UsernamesLoop(done <-chan struct{}) {
 }
 
 func handleSSHLine(state *UsernamesState, line string, lastSave *time.Time) bool {
-	// 1) 成功登录 → 自动白名单
+	// 1) 公钥成功登录 → 自动白名单
 	if m := reAccept.FindStringSubmatch(line); m != nil {
 		ip := m[2]
 		if !ignoreIP[ip] && !containsStr(state.Whitelist, ip) {
@@ -190,6 +203,18 @@ func handleSSHLine(state *UsernamesState, line string, lastSave *time.Time) bool
 			fmt.Println("[usernames] auto-whitelist", ip)
 		}
 		return true
+	}
+	// 1b) 密码成功登录 → 境外 IP 一律封禁（无论账号密码对不对）
+	if m := reAcceptPass.FindStringSubmatch(line); m != nil {
+		ip := m[2]
+		if ignoreIP[ip] || containsStr(state.Whitelist, ip) {
+			return false
+		}
+		geo := QueryGeo(ip)
+		if !geo.IsCN {
+			return banIPOnce(state, ip, "境外IP密码登录成功 ("+geo.Location+")", geo.Location)
+		}
+		return false
 	}
 	// 2) 失败尝试 → 判定地理与用户名
 	m := reFail.FindStringSubmatch(line)
@@ -209,30 +234,52 @@ func handleSSHLine(state *UsernamesState, line string, lastSave *time.Time) bool
 		rec.Users = append(rec.Users, user)
 	}
 	geo := QueryGeo(ip)
-	rec.Location = geo.Location
-	isCN := geo.IsCN
 
 	shouldBan := false
 	reason := ""
-	if !isCN {
+	if geoUnknown(geo) {
+		shouldBan = true
+		reason = "归属地未知IP拦截 (查询失败按境外处理)"
+	} else if !geo.IsCN {
 		shouldBan = true
 		reason = "境外IP拦截 (" + geo.Location + ")"
-	} else if len(rec.Users) > threshold {
+	} else if len(rec.Users) > Conf().Threshold {
 		shouldBan = true
 		reason = fmt.Sprintf("用户名风暴 (不同账号:%d)", len(rec.Users))
 	}
-	if shouldBan && !rec.Banned {
-		rec.Banned = true
-		rec.Reason = reason
-		rec.Time = time.Now().Format("2006-01-02 15:04:05")
-		if !isBannedLocal(ip) {
-			banLocal(ip)
-		}
-		syncRelay(ip)
-		fmt.Printf("PERM-BANNED [%s] %s\n", reason, ip)
-		return true
+	if shouldBan {
+		return banIPOnce(state, ip, reason, geo.Location)
 	}
 	return false
+}
+
+// geoUnknown 判定归属地是否查询失败（fail-close：未知按境外封但 reason 单独标注）。
+func geoUnknown(geo GeoInfo) bool {
+	return geo.Country == "未知" || geo.Location == "归属地未识别"
+}
+
+// banIPOnce 封禁一个 IP（去重），下发本机 iptables 并同步中转机。
+func banIPOnce(state *UsernamesState, ip, reason, location string) bool {
+	rec, ok := state.IPs[ip]
+	if !ok {
+		rec = &IPRecord{}
+		state.IPs[ip] = rec
+	}
+	rec.Location = location
+	if rec.Banned {
+		return false
+	}
+	rec.Banned = true
+	rec.Reason = reason
+	rec.Time = time.Now().Format("2006-01-02 15:04:05")
+	if !isBannedLocal(ip) {
+		banLocal(ip)
+	}
+	syncRelay(ip)
+	fmt.Printf("PERM-BANNED [%s] %s\n", reason, ip)
+	go notifyBan(ip, reason, rec.Location, rec.Time)
+	go collectEvidence(ip, reason)
+	return true
 }
 
 func containsStr(list []string, s string) bool {

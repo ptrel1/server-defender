@@ -63,6 +63,11 @@ func main() {
 		handler.WriteJSON(w, handler.DashboardData(includeVirtual))
 	})
 
+	// 封禁列表 CSV 导出
+	mux.HandleFunc("/api/bans/export", func(w http.ResponseWriter, r *http.Request) {
+		handler.ExportBansCSV(w)
+	})
+
 	// 手动封禁
 	mux.HandleFunc("/api/block_ip", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

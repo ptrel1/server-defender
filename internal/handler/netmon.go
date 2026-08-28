@@ -70,7 +70,10 @@ func RenderNetTopIPsHTML(tops []service.TopIP) string {
 		if i >= 8 {
 			break
 		}
-		loc := service.QueryGeo(item.IP).Location
+		loc, ok := service.QueryGeoFast(item.IP)
+		if !ok {
+			loc = "查询中…"
+		}
 		cls := "tag-danger"
 		if item.Count < 80 {
 			cls = "tag-warning"

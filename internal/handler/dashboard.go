@@ -4,6 +4,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -79,6 +80,17 @@ func DashboardData(includeVirtual bool) map[string]interface{} {
 		"history":                recentHistory(),
 		// 时间
 		"time":                   time.Now().Format("2006-01-02 15:04:05"),
+	}
+}
+
+// ExportBansCSV 导出当前封禁列表为 CSV（月度安全报告用）。
+func ExportBansCSV(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=bans_"+time.Now().Format("20060102")+".csv")
+	w.Write([]byte("\ufeffip,归属地,触发规则,时间\n"))
+	for _, b := range UsernameBans() {
+		row := fmt.Sprintf("\"%s\",\"%s\",\"%s\",\"%s\"\n", b.IP, b.Location, b.Reason, b.Time)
+		w.Write([]byte(row))
 	}
 }
 

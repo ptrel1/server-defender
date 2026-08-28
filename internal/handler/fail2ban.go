@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"server-defender/internal/service"
 )
 
 // 本文件：fail2ban / iptables / lastb / dmesg 采集 + 对应 render 片段函数。
@@ -186,15 +188,22 @@ func RenderF2BHTML(f F2BInfo, jailLabel string) string {
 		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>暂无动态封禁 IP</span></div>"
 	}
 	var sb strings.Builder
+	fastLoc := func(ip string) string {
+		loc, ok := service.QueryGeoFast(ip)
+		if !ok {
+			return "查询中…"
+		}
+		return loc
+	}
 	if jailLabel == "frps" {
-		sb.WriteString("<table><tr><th>#</th><th>IP 地址</th><th>防护状态</th></tr>")
+		sb.WriteString("<table><tr><th>#</th><th>IP 地址</th><th>归属地</th><th>防护状态</th></tr>")
 		for i, ip := range f.BannedList {
-			fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s</td><td><span class=\"tag tag-warning\">隧道隔离中</span></td></tr>", i+1, ip)
+			fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag tag-warning\">隧道隔离中</span></td></tr>", i+1, ip, fastLoc(ip))
 		}
 	} else {
-		sb.WriteString("<table><tr><th>#</th><th>IP 地址</th><th>状态</th></tr>")
+		sb.WriteString("<table><tr><th>#</th><th>IP 地址</th><th>归属地</th><th>状态</th></tr>")
 		for i, ip := range f.BannedList {
-			fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s</td><td><span class=\"tag tag-danger\">封禁中</span></td></tr>", i+1, ip)
+			fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag tag-danger\">封禁中</span></td></tr>", i+1, ip, fastLoc(ip))
 		}
 	}
 	return sb.String() + "</table>"
@@ -205,10 +214,14 @@ func RenderTopIPsHTML(tops []TopCounter) string {
 		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>暂无高频攻击记录</span></div>"
 	}
 	var sb strings.Builder
-	sb.WriteString("<table><tr><th>#</th><th>攻击来源 IP</th><th>探测次数</th></tr>")
+	sb.WriteString("<table><tr><th>#</th><th>攻击来源 IP</th><th>归属地</th><th>探测次数</th></tr>")
 	for i, item := range tops {
-		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s</td><td><span class=\"tag %s\">%d 次</span></td></tr>",
-			i+1, item.Name, tagDangerCls(item.Count), item.Count)
+		loc, ok := service.QueryGeoFast(item.Name)
+		if !ok {
+			loc = "查询中…"
+		}
+		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag %s\">%d 次</span></td></tr>",
+			i+1, item.Name, loc, tagDangerCls(item.Count), item.Count)
 	}
 	return sb.String() + "</table>"
 }
@@ -231,9 +244,13 @@ func RenderRecentHTML(recent []RecentEntry) string {
 		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>暂无攻击记录</span></div>"
 	}
 	var sb strings.Builder
-	sb.WriteString("<table><tr><th>#</th><th>尝试账号</th><th>来源 IP</th></tr>")
+	sb.WriteString("<table><tr><th>#</th><th>尝试账号</th><th>来源 IP</th><th>归属地</th></tr>")
 	for i, r := range recent {
-		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"user-cell\">%s</td><td class=\"ip-cell\">%s</td></tr>", i+1, r.User, r.IP)
+		loc, ok := service.QueryGeoFast(r.IP)
+		if !ok {
+			loc = "查询中…"
+		}
+		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"user-cell\">%s</td><td class=\"ip-cell\">%s</td><td style=\"color:var(--text-secondary)\">%s</td></tr>", i+1, r.User, r.IP, loc)
 	}
 	return sb.String() + "</table>"
 }
