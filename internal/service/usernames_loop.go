@@ -132,6 +132,8 @@ func applyAllBans(s *UsernamesState) {
 func UsernamesLoop(done <-chan struct{}) {
 	WriteDefaultConfig()
 	state := loadUsernamesState()
+	go syncWhitelistToF2B(state.Whitelist) // 启动即同步一次，弥合两套白名单
+	prevWL := len(state.Whitelist)
 	applyAllBans(state)
 	lastSave := time.Now()
 
@@ -166,10 +168,19 @@ func UsernamesLoop(done <-chan struct{}) {
 			line := strings.TrimSpace(scanner.Text())
 			stateMu.Lock()
 			changed := handleSSHLine(state, line, &lastSave)
+			wl := len(state.Whitelist)
 			stateMu.Unlock()
 			if changed {
 				saveUsernamesState(state)
 				writeBanFile(state)
+			}
+			// 白名单增长(新公钥登录) → 同步进 fail2ban ignoreip
+			if wl > prevWL {
+				prevWL = wl
+				stateMu.Lock()
+				wlCopy := append([]string(nil), state.Whitelist...)
+				stateMu.Unlock()
+				go syncWhitelistToF2B(wlCopy)
 			}
 			// 周期持久化
 			if time.Since(lastSave) > saveEvery {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -43,6 +44,55 @@ func notifyBan(ip, reason, location, when string) {
 	)
 	if err := c.Run(); err != nil {
 		fmt.Println("[notify] failed:", err)
+	}
+}
+
+// syncWhitelistToF2B 把 defender 白名单同步进 fail2ban 各 jail 的 ignoreip。
+// 背景：defender 与 fail2ban 是两套独立封禁体系，白名单互不相通——
+// 曾出现"自己人 IP 被 frps-ssh 按高频连接误封"（20260829 事件）。
+// 双保险：1) fail2ban-client 运行时 addignoreip（立即生效）；
+//         2) jail 配置文件持久化（防 fail2ban 重启丢失），仅处理含 ignoreip 行的 conf。
+func syncWhitelistToF2B(whitelist []string) {
+	if len(whitelist) == 0 {
+		return
+	}
+	jails := []string{"frps-ssh", "sshd"}
+	for _, ip := range whitelist {
+		for _, j := range jails {
+			_ = exec.Command("fail2ban-client", "set", j, "addignoreip", ip).Run()
+		}
+	}
+	// 持久化到 frps-ssh.conf（该文件已有 ignoreip 行；sshd jail 未自定义则跳过）
+	conf := "/etc/fail2ban/jail.d/frps-ssh.conf"
+	data, err := os.ReadFile(conf)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	have := map[string]bool{}
+	for _, ip := range whitelist {
+		have[ip] = true
+	}
+	changed := false
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "ignoreip") {
+			fields := strings.Fields(line[strings.Index(line, "=")+1:])
+			for _, f := range fields {
+				have[f] = true
+			}
+			var out []string
+			for f := range have {
+				out = append(out, f)
+			}
+			sort.Strings(out)
+			lines[i] = "ignoreip = " + strings.Join(out, " ")
+			changed = true
+			break
+		}
+	}
+	if changed {
+		_ = os.WriteFile(conf, []byte(strings.Join(lines, "\n")), 0o644)
+		_ = exec.Command("fail2ban-client", "reload", "frps-ssh").Run()
 	}
 }
 
