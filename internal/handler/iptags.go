@@ -82,6 +82,13 @@ func IPTagsData() map[string]interface{} {
 func HandleIPTags(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		// ?ip=X 查询该 IP 命中的标记（含通配符/CIDR 命中），用于编辑回填
+		if qip := strings.TrimSpace(r.URL.Query().Get("ip")); qip != "" {
+			tag, pattern := service.ResolveTagForIP(qip)
+			WriteJSON(w, map[string]interface{}{"code": 0, "ip": qip, "pattern": pattern,
+				"tag": tag.Tag, "note": tag.Note, "color": tag.Color, "found": tag.Tag != ""})
+			return
+		}
 		WriteJSON(w, IPTagsData())
 	case http.MethodPost:
 		var req struct {

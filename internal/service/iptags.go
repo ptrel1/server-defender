@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,15 +83,110 @@ func isIPBanned(ip string) bool {
 	return false
 }
 
+// ipPatternMatch 判断标记 key(pattern) 是否匹配具体 IP。
+// 支持三种形式：
+//   - 精确 IP：如 192.168.1.10
+//   - 通配符：如 36.18.x.x / 36.18.*.*（x 或 * 均可，仅按 IPv4 四段匹配）
+//   - CIDR：如 36.18.0.0/16
+func ipPatternMatch(pattern, ip string) bool {
+	p := strings.TrimSpace(pattern)
+	ip = strings.TrimSpace(ip)
+	// CIDR
+	if strings.Contains(p, "/") {
+		_, ipnet, err := net.ParseCIDR(p)
+		if err != nil {
+			return p == ip
+		}
+		return ipnet.Contains(net.ParseIP(ip))
+	}
+	// 含通配符(x/*)：按 IPv4 四段匹配
+	pp := strings.Split(p, ".")
+	ii := strings.Split(ip, ".")
+	if len(pp) == 4 && len(ii) == 4 {
+		for i := 0; i < 4; i++ {
+			if pp[i] == "x" || pp[i] == "*" {
+				continue
+			}
+			if pp[i] != ii[i] {
+				return false
+			}
+		}
+		return true
+	}
+	return p == ip
+}
+
+// patternSpecificity 返回 pattern 的"具体度"（值越大越具体，越优先）。
+// 精确 IP=4；三段通配如 36.18.x.x=2；二段通配如 36.x.x.x=0；CIDR 按前缀长度折算。
+func patternSpecificity(pattern string) int {
+	p := strings.TrimSpace(pattern)
+	if strings.Contains(p, "/") {
+		if _, ipnet, err := net.ParseCIDR(p); err == nil {
+			ones, _ := ipnet.Mask.Size()
+			return ones
+		}
+		return 0
+	}
+	pp := strings.Split(p, ".")
+	score := 0
+	for _, seg := range pp {
+		if seg != "x" && seg != "*" {
+			score++
+		}
+	}
+	return score
+}
+
+// findCustomTag 在自定义标记中找匹配该 IP 的标记；精确优先、再按具体度降序取最具体一条。
+func findCustomTag(custom map[string]IPTag, ip string) (IPTag, bool) {
+	best := IPTag{}
+	found := false
+	bestSpec := -1
+	for pattern, tag := range custom {
+		if !ipPatternMatch(pattern, ip) {
+			continue
+		}
+		spec := patternSpecificity(pattern)
+		if spec > bestSpec {
+			best = tag
+			bestSpec = spec
+			found = true
+		}
+	}
+	return best, found
+}
+
 // ResolveIPTag 返回某 IP 的最终标记（手动优先，否则自动；均无返回 false）。
 func ResolveIPTag(ip string) (IPTag, bool) {
 	tagsMu.Lock()
-	custom := loadIPTagsState().Custom[ip]
+	custom := loadIPTagsState().Custom
 	tagsMu.Unlock()
-	if custom.Tag != "" {
-		return custom, true
+	if t, ok := findCustomTag(custom, ip); ok {
+		return t, true
 	}
 	return ipTagAuto(ip)
+}
+
+// ResolveTagForIP 返回某 IP 命中的标记及其 pattern key（供编辑回填）；无则返回零值。
+func ResolveTagForIP(ip string) (IPTag, string) {
+	tagsMu.Lock()
+	custom := loadIPTagsState().Custom
+	tagsMu.Unlock()
+	best := IPTag{}
+	bestPattern := ""
+	bestSpec := -1
+	for pattern, tag := range custom {
+		if !ipPatternMatch(pattern, ip) {
+			continue
+		}
+		spec := patternSpecificity(pattern)
+		if spec > bestSpec {
+			best = tag
+			bestPattern = pattern
+			bestSpec = spec
+		}
+	}
+	return best, bestPattern
 }
 
 // ResolveIPTagAll 返回全部 IP→最终标记映射（手动 + 自动合并），供面板一次性注入。

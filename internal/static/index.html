@@ -726,13 +726,37 @@ function extractIP(t) {
   const m = String(t).match(/((?:\d{1,3}\.){3}\d{1,3})|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:]+/);
   return m ? m[0] : null;
 }
-// 打开标记管理并预填目标 IP，聚焦标签输入（复用现有 Modal，零新 UI）。
+// 打开标记管理并预填目标 IP 及其已有标记（编辑回填：注释/标签/颜色），聚焦标签输入。
 async function openTagForIP(ip) {
   showIPTagModal();
-  document.getElementById('iptagIp').value = ip;
-  const ipIn = document.getElementById('iptagTag');
-  if (ipIn) ipIn.focus();
-  showToast('✏️ 正在为 '+ip+' 添加/编辑标记');
+  const ipEl = document.getElementById('iptagIp');
+  const tagEl = document.getElementById('iptagTag');
+  const noteEl = document.getElementById('iptagNote');
+  const colorEl = document.getElementById('iptagColor');
+  ipEl.value = ip;
+  tagEl.value = ''; noteEl.value = '';
+  // 查询该 IP 是否已有标记(含通配符/CIDR 命中)，回填编辑框
+  try {
+    const res = await fetch('/api/iptags?ip='+encodeURIComponent(ip));
+    const d = await res.json();
+    if (d && d.found) {
+      tagEl.value = d.tag || '';
+      noteEl.value = d.note || '';
+      if (d.color && colorEl.options && colorEl.querySelector('option[value="'+d.color+'"]')) colorEl.value = d.color;
+      // 若命中网段/通配符标记，提示用户当前编辑的是命中规则
+      if (d.pattern && d.pattern !== ip) {
+        noteEl.placeholder = '注释(可选)；当前命中：'+d.pattern;
+      }
+      showToast('✏️ 已回填 '+ip+' 的现有标记，可修改后保存');
+    } else {
+      noteEl.placeholder = '注释(可选)';
+      showToast('✏️ 正在为 '+ip+' 添加标记');
+    }
+  } catch(e) {
+    noteEl.placeholder = '注释(可选)';
+    showToast('✏️ 正在为 '+ip+' 添加/编辑标记');
+  }
+  if (tagEl) tagEl.focus();
 }
 // 全局事件委托：点击任意表格 IP 单元格 → 就地编辑；点击徽标(看注释)不触发。
 document.addEventListener('click', function(e) {
