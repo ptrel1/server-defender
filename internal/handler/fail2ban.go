@@ -128,11 +128,36 @@ type LastbStats struct {
 type TopCounter struct {
 	Name  string
 	Count int
+	Last  string // 该IP最后一次探测时间(事件流/TOP展示用)
 }
 
 type RecentEntry struct {
 	User string
 	IP   string
+	Time string // 该次尝试发生时间
+}
+
+// 月名→数字短码，用于 lastb 时间格式化为 月-日 时:分
+var lastbMonthShort = map[string]string{
+	"Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04", "May": "05", "Jun": "06",
+	"Jul": "07", "Aug": "08", "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
+}
+
+// parseLastbTime 从 lastb 行 parts 提取可读时间。lastb 行格式:
+//
+//	user tty IP Mon dd hh:mm - hh:mm (00:00)
+//
+// parts[4]=月 parts[5]=日 parts[6]=起始hh:mm
+func parseLastbTime(parts []string) string {
+	if len(parts) < 7 {
+		return ""
+	}
+	mon := lastbMonthShort[parts[4]]
+	day := parts[5]
+	if len(day) == 1 {
+		day = "0" + day
+	}
+	return mon + "-" + day + " " + parts[6]
 }
 
 func GetLastbStats() LastbStats {
@@ -140,6 +165,7 @@ func GetLastbStats() LastbStats {
 	var st LastbStats
 	ipCount := map[string]int{}
 	userCount := map[string]int{}
+	ipLast := map[string]string{} // ip -> 最后探测时间
 	topIPs := []TopCounter{}
 	topUsers := []TopCounter{}
 	recent := []RecentEntry{}
@@ -152,16 +178,25 @@ func GetLastbStats() LastbStats {
 		if len(parts) >= 3 {
 			user := parts[0]
 			ip := parts[2]
+			ts := parseLastbTime(parts)
 			userCount[user]++
 			if ip != "127.0.0.1" && ip != "::1" && ip != "0.0.0.0" && ip != "localhost" {
 				ipCount[ip]++
+				// 记录该 IP 最后一次探测时间（lastb 按时间倒序，首个出现即最近）
+				if _, seen := ipLast[ip]; !seen && ts != "" {
+					ipLast[ip] = ts
+				}
 			}
 			if len(recent) < 10 {
-				recent = append(recent, RecentEntry{User: user, IP: ip})
+				recent = append(recent, RecentEntry{User: user, IP: ip, Time: ts})
 			}
 		}
 	}
+	// 把每个 IP 的最后时间并入 TopCounter
 	topIPs = sortCounters(ipCount, 8)
+	for i := range topIPs {
+		topIPs[i].Last = ipLast[topIPs[i].Name]
+	}
 	topUsers = sortCounters(userCount, 8)
 	return LastbStats{Total: st.Total, TopIPs: topIPs, TopUsers: topUsers, Recent: recent}
 }
@@ -228,14 +263,18 @@ func RenderTopIPsHTML(tops []TopCounter) string {
 		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>暂无高频攻击记录</span></div>"
 	}
 	var sb strings.Builder
-	sb.WriteString("<table><tr><th>#</th><th>攻击来源 IP</th><th>归属地</th><th>探测次数</th></tr>")
+	sb.WriteString("<table><tr><th>#</th><th>攻击来源 IP</th><th>归属地</th><th>探测次数</th><th>最近活跃</th></tr>")
 	for i, item := range tops {
 		loc, ok := service.QueryGeoFast(item.Name)
 		if !ok {
 			loc = "查询中…"
 		}
-		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag %s\">%d 次</span></td></tr>",
-			i+1, item.Name, IPTagBadgeHTML(item.Name), loc, tagDangerCls(item.Count), item.Count)
+		last := item.Last
+		if last == "" {
+			last = "-"
+		}
+		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag %s\">%d 次</span></td><td class=\"time-cell\">%s</td></tr>",
+			i+1, item.Name, IPTagBadgeHTML(item.Name), loc, tagDangerCls(item.Count), item.Count, last)
 	}
 	return sb.String() + "</table>"
 }
@@ -258,13 +297,17 @@ func RenderRecentHTML(recent []RecentEntry) string {
 		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>暂无攻击记录</span></div>"
 	}
 	var sb strings.Builder
-	sb.WriteString("<table><tr><th>#</th><th>尝试账号</th><th>来源 IP</th><th>归属地</th></tr>")
+	sb.WriteString("<table><tr><th>#</th><th>时间</th><th>尝试账号</th><th>来源 IP</th><th>归属地</th></tr>")
 	for i, r := range recent {
 		loc, ok := service.QueryGeoFast(r.IP)
 		if !ok {
 			loc = "查询中…"
 		}
-		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"user-cell\">%s</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td></tr>", i+1, r.User, r.IP, IPTagBadgeHTML(r.IP), loc)
+		ts := r.Time
+		if ts == "" {
+			ts = "-"
+		}
+		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"time-cell\">%s</td><td class=\"user-cell\">%s</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td></tr>", i+1, ts, r.User, r.IP, IPTagBadgeHTML(r.IP), loc)
 	}
 	return sb.String() + "</table>"
 }
