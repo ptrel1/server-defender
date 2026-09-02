@@ -64,16 +64,30 @@ type BlockedIP struct {
 }
 
 func IptablesBlocked() []BlockedIP {
-	out := sh("iptables", "-L", "INPUT", "-v", "-n", "--line-numbers")
+	// 双向封禁展示（20260831）：INPUT(-s 封入) + OUTPUT(-d 封出)，出向行目的地址在第 9 列
+	seen := map[string]bool{}
 	blk := []BlockedIP{}
-	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "DROP") || strings.Contains(line, "REJECT") {
-			parts := strings.Fields(line)
-			if len(parts) >= 9 {
-				if parts[8] != "0.0.0.0/0" {
-					blk = append(blk, BlockedIP{Num: parts[0], Pkts: parts[1], Src: parts[8]})
-				}
+	chains := []struct{ name, dir string }{{"INPUT", "in"}, {"OUTPUT", "out"}}
+	for _, ch := range chains {
+		out := sh("iptables", "-L", ch.name, "-v", "-n", "--line-numbers")
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.Contains(line, "DROP") && !strings.Contains(line, "REJECT") {
+				continue
 			}
+			parts := strings.Fields(line)
+			if len(parts) < 9 {
+				continue
+			}
+			// INPUT 行 parts[8] 为源地址；OUTPUT 行 parts[8] 为目的地址
+			if parts[8] == "0.0.0.0/0" {
+				continue
+			}
+			key := ch.dir + ":" + parts[8]
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			blk = append(blk, BlockedIP{Num: parts[0], Pkts: parts[1], Src: parts[8] + "(" + ch.dir + ")"})
 		}
 	}
 	return blk
@@ -220,8 +234,8 @@ func RenderTopIPsHTML(tops []TopCounter) string {
 		if !ok {
 			loc = "查询中…"
 		}
-		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag %s\">%d 次</span></td></tr>",
-			i+1, item.Name, loc, tagDangerCls(item.Count), item.Count)
+		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag %s\">%d 次</span></td></tr>",
+			i+1, item.Name, IPTagBadgeHTML(item.Name), loc, tagDangerCls(item.Count), item.Count)
 	}
 	return sb.String() + "</table>"
 }
@@ -250,7 +264,7 @@ func RenderRecentHTML(recent []RecentEntry) string {
 		if !ok {
 			loc = "查询中…"
 		}
-		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"user-cell\">%s</td><td class=\"ip-cell\">%s</td><td style=\"color:var(--text-secondary)\">%s</td></tr>", i+1, r.User, r.IP, loc)
+		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"user-cell\">%s</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td></tr>", i+1, r.User, r.IP, IPTagBadgeHTML(r.IP), loc)
 	}
 	return sb.String() + "</table>"
 }

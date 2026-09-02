@@ -68,6 +68,9 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 .tag-warning { background:rgba(255,159,10,0.15); color:#ffb340; border:1px solid rgba(255,159,10,0.3); }
 .tag-success { background:rgba(48,209,88,0.15); color:#52dc74; border:1px solid rgba(48,209,88,0.3); }
 .tag-blue { background:rgba(10,132,255,0.15); color:#4da3ff; border:1px solid rgba(10,132,255,0.3); }
+.tag-green { background:rgba(48,209,88,0.15); color:#52dc74; border:1px solid rgba(48,209,88,0.3); }
+.tag-gray { background:rgba(142,142,147,0.15); color:#b0b0b8; border:1px solid rgba(142,142,147,0.3); }
+.ip-tag { margin-left:5px; vertical-align:middle; cursor:default; }
 .empty-state { padding:28px 0; text-align:center; color:var(--text-muted); font-size:13px; display:flex; flex-direction:column; align-items:center; gap:6px; }
 .empty-icon { font-size:24px; opacity:0.6; }
 .btn-terminate { padding:3px 9px; border-radius:6px; font-size:11px; font-weight:600; background:rgba(255,69,58,0.15); color:#ff5e52; border:1px solid rgba(255,69,58,0.3); cursor:pointer; }
@@ -137,8 +140,43 @@ tr:hover td { background:rgba(255,255,255,0.03); }
   <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">🛡 总览</button>
   <button class="tab-btn" data-tab="defense" onclick="switchTab('defense')"><span class="tab-dot"></span>🔐 防御</button>
   <button class="tab-btn" data-tab="network" onclick="switchTab('network')">🌐 网络</button>
+  <button class="tab-btn" data-tab="webmon" onclick="switchTab('webmon')"><span class="tab-dot" id="webmon-dot"></span>👁 访问</button>
   <button class="tab-btn" data-tab="host" onclick="switchTab('host')"><span class="tab-dot"></span>⚡ 主机</button>
 </nav>
+
+<!-- ============ Tab: 访问（WebMon 域名访问监控）============ -->
+<section class="tab-page" id="page-webmon">
+<section class="metrics-row" style="margin-bottom:20px;">
+  <div class="metric-card"><div class="metric-label">👁 今日总请求</div><div class="metric-value text-blue" id="stat-web-req">-</div><div class="metric-sub">全部域名合计</div></div>
+  <div class="metric-card"><div class="metric-label">🧑‍💻 今日独立 IP</div><div class="metric-value text-purple" id="stat-web-ips">-</div><div class="metric-sub">去重来源地址</div></div>
+  <div class="metric-card"><div class="metric-label">🟦 dsh.ptrel.cc.cd</div><div class="metric-value" style="color:#0a84ff" id="stat-web-d1">-</div><div class="metric-sub">主实例今日请求数</div></div>
+  <div class="metric-card"><div class="metric-label">🟩 dsh2.ptrel.cc.cd</div><div class="metric-value" style="color:#30d158" id="stat-web-d2">-</div><div class="metric-sub">救援实例今日请求数</div></div>
+</section>
+<section style="display:flex;flex-direction:column;gap:20px;margin-bottom:20px;">
+  <div class="glass-card">
+    <div class="card-header"><div class="card-title">📈 24 小时域名访问趋势</div><span class="toggle-btn" style="cursor:default">10 分钟粒度</span></div>
+    <div class="chart-wrap"><canvas id="webChart"></canvas></div>
+  </div>
+  <div class="glass-card">
+    <div class="card-header"><div class="card-title">🚨 访问异常告警</div><div class="count-badge" id="badge-web-alerts">0</div></div>
+    <div id="container-web-alerts"><div class="empty-state"><div class="empty-icon">✅</div><span>访问状态平稳</span></div></div>
+  </div>
+</section>
+<main class="main-workspace">
+  <div class="column">
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🧾 最近访问记录</div></div>
+      <div id="container-web-recent"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+  </div>
+  <div class="column">
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🏅 访问来源 TOP IP</div><button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="showIPTagModal()">🏷 标记管理</button></div>
+      <div id="container-web-top"><div class="empty-state"><div class="empty-icon">⌛</div><span>数据加载中...</span></div></div>
+    </div>
+  </div>
+</main>
+</section>
 
 <!-- ============ Tab: 总览（态势一屏）============ -->
 <section class="tab-page active" id="page-overview">
@@ -271,6 +309,33 @@ tr:hover td { background:rgba(255,255,255,0.03); }
       <button class="btn btn-secondary" onclick="hideBlockModal()">取消</button>
       <button class="btn btn-primary" onclick="submitBlockIP()">确认封禁</button>
     </div>
+  </div>
+</div>
+
+<!-- IP 标记管理 -->
+<div class="modal" id="iptagModal">
+  <div class="modal-dialog" style="max-width:560px">
+    <div class="modal-title">🏷 IP 标记管理</div>
+    <div class="modal-desc">为任意 IP 添加标签+注释用于辨认。无需手动维护白/黑名单——它们会自动识别。</div>
+    <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <input type="text" id="iptagIp" class="modal-input" style="flex:2;min-width:120px;margin-bottom:0" placeholder="IP" />
+      <input type="text" id="iptagTag" class="modal-input" style="flex:1;min-width:100px;margin-bottom:0" placeholder="标签" />
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <input type="text" id="iptagNote" class="modal-input" style="margin-bottom:0" placeholder="注释(可选)" />
+      <select id="iptagColor" class="modal-input" style="flex:0 0 110px;margin-bottom:0">
+        <option value="blue">蓝</option>
+        <option value="green">绿</option>
+        <option value="yellow">黄</option>
+        <option value="red">红</option>
+        <option value="gray">灰</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="hideIPTagModal()">关闭</button>
+      <button class="btn btn-primary" onclick="addIPTag()">添加/更新</button>
+    </div>
+    <div id="iptagList" style="margin-top:16px;max-height:260px;overflow:auto;font-size:12px"></div>
   </div>
 </div>
 
@@ -451,6 +516,7 @@ function switchTab(name) {
   // 切走/切回时让当前页图表重排（隐藏容器内 canvas 尺寸为 0 的问题）
   if (name === 'overview' && historyChart1) historyChart1.resize();
   if ((name === 'host' || name === 'overview') && historyChart2) historyChart2.resize();
+  if (name === 'webmon' && chartStore.w) chartStore.w.resize();
 }
 
 function renderChart(history) {
@@ -500,6 +566,57 @@ let historyChart1 = null, historyChart2 = null;
 // 延迟绑定 resize 引用（图表创建后）
 setTimeout(() => { historyChart1 = chartStore.c1; historyChart2 = chartStore.c2; }, 300);
 
+// ===== WebMon 域名访问监控（独立 15s 轮询，避免拖慢 4s 主循环）=====
+async function fetchWebMon() {
+  try {
+    const res = await fetch('/api/webmon');
+    const d = await res.json();
+    document.getElementById('stat-web-req').textContent = d.today_requests || 0;
+    document.getElementById('stat-web-ips').textContent = d.today_ips || 0;
+    const pd = d.per_domain || {};
+    document.getElementById('stat-web-d1').textContent = pd['dsh.ptrel.cc.cd'] || 0;
+    document.getElementById('stat-web-d2').textContent = pd['dsh2.ptrel.cc.cd'] || 0;
+    document.getElementById('container-web-top').innerHTML = d.top_ips_html;
+    document.getElementById('container-web-recent').innerHTML = d.recent_html;
+    document.getElementById('container-web-alerts').innerHTML = d.alerts_html;
+    document.getElementById('badge-web-alerts').textContent = d.alerts_count || 0;
+    const dot = document.getElementById('webmon-dot');
+    if (dot) dot.style.display = (d.alerts_count || 0) > 0 ? 'inline-block' : 'none';
+    renderWebChart(d.trend_labels || [], d.trend_datasets || []);
+  } catch (err) { console.error('WebMon fetch error:', err); }
+}
+
+function renderWebChart(labels, datasets) {
+  const ctx = document.getElementById('webChart');
+  if (!ctx) return;
+  if (chartStore.w) {
+    const c = chartStore.w;
+    c.data.labels = labels;
+    c.data.datasets.forEach((ds, i) => {
+      if (datasets[i]) ds.data = datasets[i].data;
+    });
+    c.update('none');
+    return;
+  }
+  chartStore.w = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: datasets.map(ds => ({
+      label: ds.label, data: ds.data, borderColor: ds.color,
+      backgroundColor: ds.color + '22', fill: ds.label !== 'dsh.ptrel.cc.cd',
+      tension: 0.3, pointRadius: 0, borderWidth: 2
+    }))},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b', precision: 0 } },
+        x: { grid: { display: false }, ticks: { color: '#64748b', maxTicksLimit: 8 } }
+      },
+      plugins: { legend: { labels: { color: '#94a3b8', usePointStyle: true, pointStyle: 'line', boxWidth: 24, boxHeight: 2 } } }
+    }
+  });
+}
+
 function toggleNic() { showVirtual = !showVirtual; fetchData(); }
 
 async function doKillProcess(pid, comm) {
@@ -517,8 +634,55 @@ async function submitBlockIP() {
 }
 document.getElementById('blockIpInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitBlockIP(); });
 
+document.getElementById('iptagColor') && document.getElementById('iptagIp').addEventListener('keydown', e => { if (e.key === 'Enter') addIPTag(); });
+document.getElementById('iptagTag') && document.getElementById('iptagTag').addEventListener('keydown', e => { if (e.key === 'Enter') addIPTag(); });
+
+// ===== IP 标记管理 =====
+const tagColorLabel = { blue:'蓝', green:'绿', yellow:'黄', red:'红', gray:'灰' };
+const tagColorClass = { blue:'tag-blue', green:'tag-green', yellow:'tag-warning', red:'tag-danger', gray:'tag-gray' };
+function showIPTagModal() { document.getElementById('iptagModal').classList.add('show'); loadIPTags(); }
+function hideIPTagModal() { document.getElementById('iptagModal').classList.remove('show'); }
+async function loadIPTags() {
+  const wrap = document.getElementById('iptagList');
+  if (!wrap) return;
+  try {
+    const res = await fetch('/api/iptags');
+    const d = await res.json();
+    const ips = d.ips || {};
+    const entries = Object.keys(ips).sort();
+    if (!entries.length) { wrap.innerHTML = '<div style="color:var(--text-muted)">暂无已标记 IP</div>'; return; }
+    let html = '';
+    for (const ip of entries) {
+      const t = ips[ip] || {};
+      const cls = tagColorClass[t.color] || 'tag-blue';
+      const note = t.note ? '<span style="color:var(--text-muted)">'+t.note+'</span>' : '';
+      const delBtn = t.auto ? '' : '<button class="btn btn-secondary" style="padding:1px 7px;font-size:10px;margin-left:6px" onclick="delIPTag(\''+ip+'\')">删除</button>';
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05)">'
+        + '<span class="tag '+cls+' ip-tag">'+t.tag+'</span>'
+        + '<span class="ip-cell">'+ip+'</span>' + note + (t.auto?'<span style="color:var(--text-muted)">·自动</span>':'') + delBtn + '</div>';
+    }
+    wrap.innerHTML = html;
+  } catch (e) { wrap.innerHTML = '<div style="color:var(--text-muted)">加载失败</div>'; }
+}
+async function addIPTag() {
+  const ip = (document.getElementById('iptagIp').value||'').trim();
+  const tag = (document.getElementById('iptagTag').value||'').trim();
+  if (!ip || !tag) { alert('IP 与标签不能为空'); return; }
+  const note = (document.getElementById('iptagNote').value||'').trim();
+  const color = document.getElementById('iptagColor').value;
+  await fetch('/api/iptags', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip, tag, note, color}) });
+  document.getElementById('iptagIp').value=''; document.getElementById('iptagTag').value=''; document.getElementById('iptagNote').value='';
+  loadIPTags();
+}
+async function delIPTag(ip) {
+  await fetch('/api/iptags', { method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip}) });
+  loadIPTags();
+}
+
 fetchData();
 setInterval(fetchData, 4000);
+fetchWebMon();
+setInterval(fetchWebMon, 15000);
 </script>
 </body>
 </html>

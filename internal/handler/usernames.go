@@ -175,8 +175,8 @@ func renderBanTable(list []UsernameBan) string {
 			loc = string(runes[:12]) + "…"
 			titleAttr = fmt.Sprintf(" title=\"%s\"", b.Location)
 		}
-		fmtF(&sb, "<tr class=\"ban-row\" data-region=\"%s\"><td>%d</td><td class=\"ip-cell\">%s</td><td%s style=\"color:var(--text-primary)\">%s</td><td><span class=\"tag %s\">%s</span></td><td class=\"time-cell\">%s</td></tr>",
-			shortRegion(loc), i+1, b.IP, titleAttr, loc, cls, reason, b.Time)
+		fmtF(&sb, "<tr class=\"ban-row\" data-region=\"%s\"><td>%d</td><td class=\"ip-cell\">%s%s</td><td%s style=\"color:var(--text-primary)\">%s</td><td><span class=\"tag %s\">%s</span></td><td class=\"time-cell\">%s</td></tr>",
+			shortRegion(loc), i+1, b.IP, IPTagBadgeHTML(b.IP), titleAttr, loc, cls, reason, b.Time)
 	}
 	return sb.String() + "</table>"
 }

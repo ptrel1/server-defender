@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 // GeoInfo 与 Python netmon/geo 返回结构对齐。
@@ -260,55 +263,16 @@ func parseIPAPI(ip, raw string) (GeoInfo, bool) {
 	return GeoInfo{IP: ip, IsCN: isCN, Country: d.Country, Location: loc, ISP: d.ISP}, true
 }
 
-// gbkToUTF8 简易 GBK→UTF-8 转换（识别高位字节，回退为 latin 处理，避免乱码导致解析失败）。
+// gbkToUTF8 真正的 GBK→UTF-8 转换（x/text GBK 解码器）。
+// pconline 归属地接口返回 GBK 编码；若输入已是合法 UTF-8 则原样返回避免二次损坏。
+// 解码失败时回退为"替换非法字节"（不 crash，仅个别字符丢失，不影响 is_cn 判定）。
 func gbkToUTF8(b []byte) string {
-	// 若已是合法 UTF-8 则直接返回
-	if utf8Valid(b) {
+	if utf8.Valid(b) {
 		return string(b)
 	}
-	// 简化处理：保留非 GBK 的普通字符流通，中文归属地丢失不影响 is_cn 判定
-	return replLatin(b)
-}
-
-func utf8Valid(b []byte) bool {
-	for i := 0; i < len(b); i++ {
-		if b[i] < 0x80 {
-			continue
-		}
-		if i+1 >= len(b) {
-			return false
-		}
-		// 判断是否为合法的多字节序列起点（这里简化，仅检查是否为常见 UTF-8 头字节）
-		if b[i]&0xE0 == 0xC0 {
-			if b[i+1]&0xC0 != 0x80 {
-				return false
-			}
-			i++
-		} else if b[i]&0xF0 == 0xE0 {
-			if i+2 >= len(b) || b[i+1]&0xC0 != 0x80 || b[i+2]&0xC0 != 0x80 {
-				return false
-			}
-			i += 2
-		} else {
-			return false
-		}
+	decoded, _, err := transform.Bytes(simplifiedchinese.GBK.NewDecoder(), b)
+	if err != nil {
+		return strings.ToValidUTF8(string(b), "�")
 	}
-	return true
+	return string(decoded)
 }
-
-func replLatin(b []byte) string {
-	var sb strings.Builder
-	for _, c := range b {
-		if c >= 0x80 {
-			sb.WriteByte(0xEF) // UTF-8 替换字符 �
-			sb.WriteByte(0xBF)
-			sb.WriteByte(0xBD)
-		} else {
-			sb.WriteByte(c)
-		}
-	}
-	return sb.String()
-}
-
-// strconv/strconv 用于潜在的计数转换（保持导入一致性，避免编译器报冗余 import）。
-var _ = strconv.Itoa

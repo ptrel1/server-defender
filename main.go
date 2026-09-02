@@ -1,8 +1,9 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v2.0.0)
-// 单二进制，内含 Web 面板 + 三个后台常驻协程：
+// Server Defender — 服务器安全与自愈中心 (Go 版 v2.2.0)
+// 单二进制，内含 Web 面板 + 后台常驻协程：
 //   - usernames_loop: journalctl sshd 实时封禁(境外/风暴)
 //   - reaper_loop:    巡检收割失控孤儿进程
 //   - history_loop:   NetMon 10 分钟采样
+//   - webmon_loop:    域名访问监控（nginx 日志 tail / IP 聚合 / 趋势 / 告警）
 // 全程仅用 Go 标准库，前端 HTML/CSS/JS/Chart.js 通过 //go:embed 打包。
 package main
 
@@ -27,6 +28,8 @@ func main() {
 	go service.UsernamesLoop(done)
 	go service.ReaperLoop(done)
 	go service.HistoryLoop(done)
+	// WebMon：域名访问监控（日志文件缺失时静默等待，不影响其他模块）
+	go service.WebMonLoop(done)
 
 	// 解析静态资源
 	sub, err := fs.Sub(staticFS, "internal/static")
@@ -68,6 +71,9 @@ func main() {
 		handler.ExportBansCSV(w)
 	})
 
+	// IP 标记管理（GET 查询 / POST 增改 / DELETE 删除）
+	mux.HandleFunc("/api/iptags", handler.HandleIPTags)
+
 	// 手动封禁
 	mux.HandleFunc("/api/block_ip", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -104,6 +110,11 @@ func main() {
 		handler.WriteJSON(w, map[string]interface{}{"code": code, "msg": msg})
 	})
 
+	// 域名访问监控（WebMon）：IP 聚合 / 趋势 / 告警
+	mux.HandleFunc("/api/webmon", func(w http.ResponseWriter, r *http.Request) {
+		handler.WriteJSON(w, handler.WebMonData())
+	})
+
 	// 前端日志上报（浏览器 JS 异常 / 环境快照，排查本地渲染问题）
 	mux.HandleFunc("/api/client_log", handler.PostClientLog)
 
@@ -130,7 +141,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v2.0.0 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v2.2.0 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)

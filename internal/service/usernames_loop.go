@@ -89,18 +89,27 @@ func writeBanFile(s *UsernamesState) {
 	_ = atomicWrite(banPath(), []byte(sb.String()))
 }
 
-// isBannedLocal 检查 iptables 是否已存在该 IP 的 DROP 规则。
+// isBannedLocal 检查 iptables 是否已存在该 IP 的 DROP 规则（入+出双向，20260831 起双向封禁）。
 func isBannedLocal(ip string) bool {
-	return runOK("iptables", "-C", "INPUT", "-s", ip, "-j", "DROP")
+	bin := "iptables"
+	if strings.Contains(ip, ":") {
+		bin = "ip6tables"
+	}
+	inOK := runOK(bin, "-C", "INPUT", "-s", ip, "-j", "DROP")
+	outOK := runOK(bin, "-C", "OUTPUT", "-d", ip, "-j", "DROP")
+	return inOK && outOK
 }
 
-// banLocal 本机下发永久封禁（IPv4/IPv6 自适应）。
+// banLocal 本机下发永久封禁（IPv4/IPv6 自适应；入+出双向：INPUT 防扫描连入，OUTPUT 防 C2 回连/矿池上报）。
 func banLocal(ip string) {
 	bin := "iptables"
 	if strings.Contains(ip, ":") {
 		bin = "ip6tables"
 	}
+	_ = runOK(bin, "-C", "INPUT", "-s", ip, "-j", "DROP")
 	_ = runOK(bin, "-A", "INPUT", "-s", ip, "-j", "DROP")
+	_ = runOK(bin, "-C", "OUTPUT", "-d", ip, "-j", "DROP")
+	_ = runOK(bin, "-A", "OUTPUT", "-d", ip, "-j", "DROP")
 	_ = runOK(bin+"-save")
 }
 
@@ -113,7 +122,13 @@ func syncRelay(ip string) {
 	if strings.Contains(ip, ":") {
 		bin = "ip6tables"
 	}
-	cmd := fmt.Sprintf("%s -C INPUT -s %s -j DROP >/dev/null 2>&1 || %s -A INPUT -s %s -j DROP; iptables-save >/dev/null", bin, ip, bin, ip)
+	// 中转机同步：入(INPUT)+出(OUTPUT)+转发(FORWARD) 三链（中转机为网关角色，20260831 双向封禁）
+	cmd := fmt.Sprintf(
+		"%s -C INPUT -s %s -j DROP >/dev/null 2>&1 || %s -A INPUT -s %s -j DROP; "+
+			"%s -C OUTPUT -d %s -j DROP >/dev/null 2>&1 || %s -A OUTPUT -d %s -j DROP; "+
+			"%s -C FORWARD -s %s -j DROP >/dev/null 2>&1 || %s -A FORWARD -s %s -j DROP; "+
+			"iptables-save >/dev/null",
+		bin, ip, bin, ip, bin, ip, bin, ip, bin, ip, bin, ip)
 	_ = exec.Command("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
 		"-o", "ConnectTimeout=8", Conf().RelayHost, cmd).Run()
 }
