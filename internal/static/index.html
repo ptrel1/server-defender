@@ -320,8 +320,18 @@ tr:hover td { background:rgba(255,255,255,0.03); }
     <div class="modal-title">🏷 IP 标记管理</div>
     <div class="modal-desc">为任意 IP 添加标签+注释用于辨认。无需手动维护白/黑名单——它们会自动识别。</div>
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-      <input type="text" id="iptagIp" class="modal-input" style="flex:2;min-width:120px;margin-bottom:0" placeholder="IP" />
-      <input type="text" id="iptagTag" class="modal-input" style="flex:1;min-width:100px;margin-bottom:0" placeholder="标签" />
+      <input type="text" id="iptagIp" class="modal-input" style="flex:2;min-width:120px;margin-bottom:0" placeholder="IP(可用逗号/空格/换行多个)" />
+      <input type="text" id="iptagTag" class="modal-input" style="flex:1;min-width:100px;margin-bottom:0" list="iptagPresets" placeholder="标签" />
+      <datalist id="iptagPresets">
+        <option value="家庭宽带"></option>
+        <option value="公司网络"></option>
+        <option value="家中监控"></option>
+        <option value="海外客户"></option>
+        <option value="临时放行"></option>
+        <option value="恶意扫描"></option>
+        <option value="代理/VPN"></option>
+        <option value="服务器机房"></option>
+      </datalist>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
       <input type="text" id="iptagNote" class="modal-input" style="margin-bottom:0" placeholder="注释(可选)" />
@@ -680,17 +690,24 @@ function showToast(msg) {
   toastTimer=setTimeout(()=>el.classList.remove('show'), 2200);
 }
 async function addIPTag() {
-  const ip = (document.getElementById('iptagIp').value||'').trim();
+  const raw = (document.getElementById('iptagIp').value||'').trim();
   const tag = (document.getElementById('iptagTag').value||'').trim();
-  if (!ip || !tag) { alert('IP 与标签不能为空'); return; }
+  if (!raw || !tag) { alert('IP 与标签不能为空'); return; }
   const note = (document.getElementById('iptagNote').value||'').trim();
   const color = document.getElementById('iptagColor').value;
-  const res = await fetch('/api/iptags', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip, tag, note, color}) });
-  const r = await res.json();
-  if (r && r.code===0) {
-    showToast('✅ 已标记 '+ip+' → '+tag);
+  // 批量支持：IP 字段按 逗号/空格/换行 拆成多个
+  const ips = raw.split(/[,\s\n]+/).map(s=>s.trim()).filter(s=>/^[0-9a-fA-F:.]+$/.test(s));
+  if (!ips.length) { alert('未识别到有效 IP'); return; }
+  let ok=0;
+  for (const ip of ips) {
+    const res = await fetch('/api/iptags', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip, tag, note, color}) });
+    const r = await res.json();
+    if (r && r.code===0) ok++;
+  }
+  if (ok>0) {
+    showToast('✅ 已批量标记 '+ok+' 个 IP → '+tag);
     document.getElementById('iptagIp').value=''; document.getElementById('iptagTag').value=''; document.getElementById('iptagNote').value='';
-  } else { alert((r&&r.msg)||'标记失败'); }
+  } else { alert('标记失败'); }
   loadIPTags();
   fetchData();
 }
