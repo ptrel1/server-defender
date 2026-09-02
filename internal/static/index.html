@@ -71,6 +71,8 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 .tag-green { background:rgba(48,209,88,0.15); color:#52dc74; border:1px solid rgba(48,209,88,0.3); }
 .tag-gray { background:rgba(142,142,147,0.15); color:#b0b0b8; border:1px solid rgba(142,142,147,0.3); }
 .ip-tag { margin-left:5px; vertical-align:middle; cursor:default; }
+.toast { position:fixed; bottom:28px; left:50%; transform:translateX(-50%); background:rgba(20,30,48,0.95); border:1px solid rgba(255,255,255,0.14); color:#fff; padding:9px 18px; border-radius:12px; font-size:13px; box-shadow:0 8px 30px rgba(0,0,0,0.4); z-index:1200; opacity:0; transition:opacity 0.25s ease; pointer-events:none; }
+.toast.show { opacity:1; }
 .empty-state { padding:28px 0; text-align:center; color:var(--text-muted); font-size:13px; display:flex; flex-direction:column; align-items:center; gap:6px; }
 .empty-icon { font-size:24px; opacity:0.6; }
 .btn-terminate { padding:3px 9px; border-radius:6px; font-size:11px; font-weight:600; background:rgba(255,69,58,0.15); color:#ff5e52; border:1px solid rgba(255,69,58,0.3); cursor:pointer; }
@@ -651,18 +653,31 @@ async function loadIPTags() {
     const ips = d.ips || {};
     const entries = Object.keys(ips).sort();
     if (!entries.length) { wrap.innerHTML = '<div style="color:var(--text-muted)">暂无已标记 IP</div>'; return; }
+    const autoIcon = { '白名单':'🛡️','已封禁':'🚫','本地':'🏠' };
+    const colIcon = { 'green':'✅','red':'❌','blue':'🔵','yellow':'⚠️','gray':'○' };
     let html = '';
     for (const ip of entries) {
       const t = ips[ip] || {};
       const cls = tagColorClass[t.color] || 'tag-blue';
+      const icon = t.auto ? (autoIcon[t.tag]||'') : (colIcon[t.color]||'');
       const note = t.note ? '<span style="color:var(--text-muted)">'+t.note+'</span>' : '';
+      const autoMark = t.auto ? '<span style="color:var(--text-muted);font-size:10px">·自动</span>' : '';
       const delBtn = t.auto ? '' : '<button class="btn btn-secondary" style="padding:1px 7px;font-size:10px;margin-left:6px" onclick="delIPTag(\''+ip+'\')">删除</button>';
       html += '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05)">'
-        + '<span class="tag '+cls+' ip-tag">'+t.tag+'</span>'
-        + '<span class="ip-cell">'+ip+'</span>' + note + (t.auto?'<span style="color:var(--text-muted)">·自动</span>':'') + delBtn + '</div>';
+        + '<span class="tag '+cls+' ip-tag">'+(icon?icon+' ':'')+t.tag+'</span>'
+        + '<span class="ip-cell">'+ip+'</span>' + note + autoMark + delBtn + '</div>';
     }
     wrap.innerHTML = html;
   } catch (e) { wrap.innerHTML = '<div style="color:var(--text-muted)">加载失败</div>'; }
+}
+// Toast 轻提示（反馈心理学：操作后即时确认）
+let toastTimer=null;
+function showToast(msg) {
+  let el=document.getElementById('globalToast');
+  if (!el) { el=document.createElement('div'); el.id='globalToast'; el.className='toast'; document.body.appendChild(el); }
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>el.classList.remove('show'), 2200);
 }
 async function addIPTag() {
   const ip = (document.getElementById('iptagIp').value||'').trim();
@@ -670,13 +685,22 @@ async function addIPTag() {
   if (!ip || !tag) { alert('IP 与标签不能为空'); return; }
   const note = (document.getElementById('iptagNote').value||'').trim();
   const color = document.getElementById('iptagColor').value;
-  await fetch('/api/iptags', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip, tag, note, color}) });
-  document.getElementById('iptagIp').value=''; document.getElementById('iptagTag').value=''; document.getElementById('iptagNote').value='';
+  const res = await fetch('/api/iptags', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip, tag, note, color}) });
+  const r = await res.json();
+  if (r && r.code===0) {
+    showToast('✅ 已标记 '+ip+' → '+tag);
+    document.getElementById('iptagIp').value=''; document.getElementById('iptagTag').value=''; document.getElementById('iptagNote').value='';
+  } else { alert((r&&r.msg)||'标记失败'); }
   loadIPTags();
+  fetchData();
 }
 async function delIPTag(ip) {
-  await fetch('/api/iptags', { method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip}) });
+  if (!confirm('确认移除对 '+ip+' 的自定义标记吗？')) return; // 可逆性：删除需确认
+  const res = await fetch('/api/iptags', { method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip}) });
+  await res.json();
+  showToast('🗑 已移除 '+ip+' 的标记');
   loadIPTags();
+  fetchData();
 }
 
 fetchData();

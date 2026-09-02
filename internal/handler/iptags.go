@@ -19,7 +19,21 @@ var tagColorClass = map[string]string{
 	"gray":   "tag-gray",
 }
 
-// IPTagBadgeHTML 渲染单个 IP 的标记徽标；无标记返回空串。
+// tagIcons 颜色/类型→图标 映射（冗余编码：颜色+图标双通道，色弱也可读）。
+// 自动标记(白名单/已封禁/本地)用专属语义图标；自定义按颜色给通用图标。
+var tagIcons = map[string]string{
+	"whitelist": "🛡️", // 白名单
+	"banned":    "🚫",  // 已封禁
+	"local":     "🏠",  // 本地
+	// 自定义颜色图标
+	"green":  "✅",
+	"red":    "❌",
+	"blue":   "🔵",
+	"yellow": "⚠️",
+	"gray":   "○",
+}
+
+// IPTagBadgeHTML 渲染单个 IP 的标记徽标（颜色+图标双通道）；无标记返回空串。
 func IPTagBadgeHTML(ip string) string {
 	tag, ok := service.ResolveIPTag(ip)
 	if !ok || strings.TrimSpace(tag.Tag) == "" {
@@ -29,12 +43,30 @@ func IPTagBadgeHTML(ip string) string {
 	if cls == "" {
 		cls = "tag-blue"
 	}
+	// 图标：按类型/颜色选择
+	icon := ""
+	if tag.Auto {
+		switch tag.Tag {
+		case "白名单":
+			icon = tagIcons["whitelist"]
+		case "已封禁":
+			icon = tagIcons["banned"]
+		case "本地":
+			icon = tagIcons["local"]
+		}
+	} else {
+		icon = tagIcons[tag.Color]
+	}
 	note := strings.TrimSpace(tag.Note)
 	h := "<span class=\"tag " + cls + " ip-tag\""
 	if note != "" {
 		h += " title=\"" + escAttr(note) + "\""
 	}
-	h += ">" + escAttr(tag.Tag) + "</span>"
+	h += ">"
+	if icon != "" {
+		h += icon + " "
+	}
+	h += escAttr(tag.Tag) + "</span>"
 	return h
 }
 
