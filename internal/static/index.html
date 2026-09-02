@@ -695,8 +695,9 @@ async function addIPTag() {
   if (!raw || !tag) { alert('IP 与标签不能为空'); return; }
   const note = (document.getElementById('iptagNote').value||'').trim();
   const color = document.getElementById('iptagColor').value;
-  // 批量支持：IP 字段按 逗号/空格/换行 拆成多个
-  const ips = raw.split(/[,\s\n]+/).map(s=>s.trim()).filter(s=>/^[0-9a-fA-F:.]+$/.test(s));
+  // 批量支持：IP 字段按 逗号/空格/换行 拆成多个；
+  // 校验放宽以兼容 精确IP(1.2.3.4 / 2001::1) + 通配符(36.18.x.x/36.18.*.*) + CIDR(36.18.0.0/16)
+  const ips = raw.split(/[,\s\n]+/).map(s=>s.trim()).filter(s=>/^[0-9a-fA-F:.xX*/]+$/.test(s));
   if (!ips.length) { alert('未识别到有效 IP'); return; }
   let ok=0;
   for (const ip of ips) {
