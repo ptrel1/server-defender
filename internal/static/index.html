@@ -703,6 +703,30 @@ async function delIPTag(ip) {
   fetchData();
 }
 
+// ===== 点击 IP 就地编辑标签（就近操作 + 可发现性） =====
+// 从单元格文本提取 IPv4/IPv6（排除徽标）。
+function extractIP(t) {
+  const m = String(t).match(/((?:\d{1,3}\.){3}\d{1,3})|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:]+/);
+  return m ? m[0] : null;
+}
+// 打开标记管理并预填目标 IP，聚焦标签输入（复用现有 Modal，零新 UI）。
+async function openTagForIP(ip) {
+  showIPTagModal();
+  document.getElementById('iptagIp').value = ip;
+  const ipIn = document.getElementById('iptagTag');
+  if (ipIn) ipIn.focus();
+  showToast('✏️ 正在为 '+ip+' 添加/编辑标记');
+}
+// 全局事件委托：点击任意表格 IP 单元格 → 就地编辑；点击徽标(看注释)不触发。
+document.addEventListener('click', function(e) {
+  const cell = e.target.closest('.ip-cell');
+  if (!cell) return;
+  if (e.target.closest('.ip-tag')) return;        // 徽标仅悬停看注释
+  if (e.target.closest('button')) return;          // 单元格内的按钮(封禁/删除)不误触
+  const ip = extractIP(cell.textContent);
+  if (ip) openTagForIP(ip);
+});
+
 fetchData();
 setInterval(fetchData, 4000);
 fetchWebMon();
