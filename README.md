@@ -11,6 +11,18 @@
 - ✅ **前端内嵌**：HTML/CSS/JS/Chart.js 通过 `//go:embed` 打包进二进制，无外部静态目录
 - ✅ **数据兼容**：`data/*.json` 数据结构与 Python 版一致，迁移不丢历史封禁/事件
 
+## 🚀 v2.3.0 新增（2026-09-03）
+
+**堵住"国内 IP 单账号爆破"盲区 + 封禁持久化**
+
+- 🔐 **单账号爆破规则**：同一 IP 对同一账号在统计窗口内的失败次数达到阈值即永久封禁，不再限于境外/用户名风暴。
+  配置项（`data/config.json`，热加载）：
+  - `single_account_threshold`（默认 10）— 单账号失败阈值
+  - `single_account_window_min`（默认 10）— 统计窗口（分钟）
+  > 背景：2026-09-03 某苏州 IP 单打 `root` 账号 3600+ 次，因国内 IP + 单账号不满足旧的"用户名风暴"而漏网。
+- 💾 **封禁持久化**：`banLocal` 封禁后自动 `iptables-save > /etc/iptables/iptables.rules`（IPv6 走 `ip6tables.rules`），
+  配合系统 `iptables.service` 开机 restore，自动封禁重启不丢（手动 `iptables` 规则同样建议持久化，见部署章节）。
+
 ## 功能
 
 - 🎨 **macOS Sonoma 毛玻璃美学** — 半透明毛玻璃卡片，双栏工作台布局

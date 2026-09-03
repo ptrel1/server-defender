@@ -1,4 +1,4 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v2.2.0)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v2.3.0)
 // 单二进制，内含 Web 面板 + 后台常驻协程：
 //   - usernames_loop: journalctl sshd 实时封禁(境外/风暴)
 //   - reaper_loop:    巡检收割失控孤儿进程
@@ -141,7 +141,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v2.2.0 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v2.3.0 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)

@@ -10,10 +10,15 @@ import (
 
 // DefenderConfig 运行时可调配置，存于 data/config.json，循环每轮重载（改完即生效，无需重启）。
 type DefenderConfig struct {
-	Threshold  int    `json:"threshold"`       // 用户名风暴阈值（不同账号数）
-	RelayHost  string `json:"relay_host"`      // 中转机 ssh 地址（同步封禁用）
-	NotifyCmd  string `json:"notify_cmd"`      // 封禁通知命令（sh 执行；可用 $BAN_IP/$BAN_REASON/$BAN_LOCATION/$BAN_TIME 环境变量；空=关闭）
-	GeoMemTTLH int    `json:"geo_mem_ttl_h"`   // geo 内存缓存 TTL（小时）
+	Threshold int    `json:"threshold"` // 用户名风暴阈值（不同账号数）
+	// SingleAccountThreshold 单账号爆破阈值：同一 IP 对同一账号在统计窗口内的失败次数达到该值即封。
+	// 用于堵住"国内 IP 只试 root 一个账号"的高频爆破盲区（20260903 事件）。
+	SingleAccountThreshold int `json:"single_account_threshold"`
+	// SingleAccountWindowMin 单账号爆破统计窗口（分钟），窗口外的失败计数自动丢弃。
+	SingleAccountWindowMin int    `json:"single_account_window_min"`
+	RelayHost              string `json:"relay_host"`    // 中转机 ssh 地址（同步封禁用）
+	NotifyCmd              string `json:"notify_cmd"`    // 封禁通知命令（sh 执行；可用 $BAN_IP/$BAN_REASON/$BAN_LOCATION/$BAN_TIME 环境变量；空=关闭）
+	GeoMemTTLH             int    `json:"geo_mem_ttl_h"` // geo 内存缓存 TTL（小时）
 }
 
 var (
@@ -24,10 +29,12 @@ var (
 
 func defaultConfig() DefenderConfig {
 	return DefenderConfig{
-		Threshold:  100,
-		RelayHost:  "root@47.98.244.173",
-		NotifyCmd:  "",
-		GeoMemTTLH: 24,
+		Threshold:               100,
+		SingleAccountThreshold:  10,
+		SingleAccountWindowMin:  10,
+		RelayHost:               "root@47.98.244.173",
+		NotifyCmd:               "",
+		GeoMemTTLH:              24,
 	}
 }
 

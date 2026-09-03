@@ -19,11 +19,18 @@ type UsernamesState struct {
 }
 
 type IPRecord struct {
-	Users    []string `json:"users"`
-	Banned   bool     `json:"banned"`
-	Reason   string   `json:"reason,omitempty"`
-	Location string   `json:"location,omitempty"`
-	Time     string   `json:"time,omitempty"`
+	Users    []string              `json:"users"`
+	Fail     map[string]*UserFail  `json:"fail,omitempty"` // 每个账号的失败计数（单账号爆破判据）
+	Banned   bool                  `json:"banned"`
+	Reason   string                `json:"reason,omitempty"`
+	Location string                `json:"location,omitempty"`
+	Time     string                `json:"time,omitempty"`
+}
+
+// UserFail 单个账号在统计窗口内的失败计数。
+type UserFail struct {
+	Count int    `json:"count"`          // 窗口内累计失败次数
+	Last  string `json:"last,omitempty"` // 最近一次失败时间（2006-01-02 15:04:05）
 }
 
 const (
@@ -101,6 +108,7 @@ func isBannedLocal(ip string) bool {
 }
 
 // banLocal 本机下发永久封禁（IPv4/IPv6 自适应；入+出双向：INPUT 防扫描连入，OUTPUT 防 C2 回连/矿池上报）。
+// 封禁同时持久化到 /etc/iptables/*.rules（配合系统 iptables.service 开机 restore，保证重启不丢）。
 func banLocal(ip string) {
 	bin := "iptables"
 	if strings.Contains(ip, ":") {
@@ -110,7 +118,24 @@ func banLocal(ip string) {
 	_ = runOK(bin, "-A", "INPUT", "-s", ip, "-j", "DROP")
 	_ = runOK(bin, "-C", "OUTPUT", "-d", ip, "-j", "DROP")
 	_ = runOK(bin, "-A", "OUTPUT", "-d", ip, "-j", "DROP")
-	_ = runOK(bin+"-save")
+	persistIptables(ip)
+}
+
+// persistIptables 将当前规则快照写入 /etc/iptables/*.rules，供 iptables.service 开机 restore。
+// IPv6 规则写入 ip6tables.rules；IPv4 写入 iptables.rules（文件不存在则跳过，避免无 iptables.service 环境报错）。
+// 由 banLocal 在每次封禁后调用，保证自动封禁重启不丢（20260903 手动封禁重启丢失教训）。
+func persistIptables(ip string) {
+	if strings.Contains(ip, ":") {
+		out := runOut(5*time.Second, "ip6tables-save")
+		if out != "" {
+			_ = os.WriteFile("/etc/iptables/ip6tables.rules", []byte(out), 0o600)
+		}
+		return
+	}
+	out := runOut(5*time.Second, "iptables-save")
+	if out != "" {
+		_ = os.WriteFile("/etc/iptables/iptables.rules", []byte(out), 0o600)
+	}
 }
 
 // syncRelay 同步封禁到中转机（本机即中转机时跳过，避免自己 ssh 自己）。
@@ -261,6 +286,39 @@ func handleSSHLine(state *UsernamesState, line string, lastSave *time.Time) bool
 	}
 	geo := QueryGeo(ip)
 
+	// 单账号爆破计数（堵"国内 IP 只试一个账号"的盲区，与 geo 无关，境内境外一视同仁）
+	cfg := Conf()
+	if cfg.SingleAccountThreshold > 0 {
+		now := time.Now()
+		window := time.Duration(cfg.SingleAccountWindowMin) * time.Minute
+		if window <= 0 {
+			window = 10 * time.Minute
+		}
+		if rec.Fail == nil {
+			rec.Fail = map[string]*UserFail{}
+		}
+		// 丢弃窗口外旧计数，避免历史失败无限累积
+		for u, f := range rec.Fail {
+			if f == nil {
+				delete(rec.Fail, u)
+				continue
+			}
+			if t, err := time.ParseInLocation("2006-01-02 15:04:05", f.Last, time.Local); err == nil && now.Sub(t) > window {
+				delete(rec.Fail, u)
+			}
+		}
+		f := rec.Fail[user]
+		if f == nil {
+			f = &UserFail{}
+			rec.Fail[user] = f
+		}
+		f.Count++
+		f.Last = now.Format("2006-01-02 15:04:05")
+		if f.Count >= cfg.SingleAccountThreshold {
+			return banIPOnce(state, ip, fmt.Sprintf("单账号爆破 (%s x%d)", user, f.Count), geo.Location)
+		}
+	}
+
 	shouldBan := false
 	reason := ""
 	if geoUnknown(geo) {
@@ -269,7 +327,7 @@ func handleSSHLine(state *UsernamesState, line string, lastSave *time.Time) bool
 	} else if !geo.IsCN {
 		shouldBan = true
 		reason = "境外IP拦截 (" + geo.Location + ")"
-	} else if len(rec.Users) > Conf().Threshold {
+	} else if len(rec.Users) > cfg.Threshold {
 		shouldBan = true
 		reason = fmt.Sprintf("用户名风暴 (不同账号:%d)", len(rec.Users))
 	}
