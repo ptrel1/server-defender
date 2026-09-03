@@ -1,6 +1,8 @@
 # ---- Go 编译产物 ----
 server-defender
+bin/
 *.exe
+.gocache/
 
 # ---- 运行时数据 ----
 data/

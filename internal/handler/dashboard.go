@@ -66,7 +66,7 @@ func DashboardData(includeVirtual bool) map[string]interface{} {
 		"region_agg_html":    RenderRegionAggHTML(unames),
 		"top_procs_html":     RenderTopProcsHTML(),
 		"reaper_events_html": RenderReaperEventsHTML(),
-		"calendar":           service.AttackCalendar(90, lastb.Total), // 攻击日历热力图(近90天)
+		"calendar":           service.AttackCalendar(365, lastb.Total), // 攻击日历热力图(近一年,经典贡献图铺满卡片)
 		// NetMon
 		"net_total_rx":     netTotalRX,
 		"net_total_tx":     netTotalTX,
@@ -77,6 +77,13 @@ func DashboardData(includeVirtual bool) map[string]interface{} {
 		"net_states_html":  RenderNetStatesHTML(conn.States),
 		"net_listens_html": RenderNetListensHTML(service.ListenPorts()),
 		"frps_html":        RenderFrpsHTML(),
+		// frp SSH 隧道自动识别（每日探测）
+		"frps_ssh_html":    RenderFrpsSSHHTML(),
+		"frps_ssh_ports_html": RenderFrpsSSHPortsHTML(),
+		"frps_ssh_at":      frpsSSHInfo().At,
+		"frps_ssh_next":    frpsSSHInfo().Next,
+		"frps_ssh_scanned": len(frpsSSHInfo().Probes),
+		"frps_ssh_error":   frpsSSHInfo().Err,
 		// 历史趋势 (最近24h)
 		"history": recentHistory(),
 		// 时间

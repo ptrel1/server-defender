@@ -31,13 +31,19 @@ var (
 	geoClient    = &http.Client{Timeout: 3 * time.Second}
 )
 
-// dataDir 返回运行时数据目录（与二进制同级的 data/），跨平台兼容。
+// dataDir 返回运行时数据目录。
+// 标准化：优先取环境变量 DEFENDER_DATA_DIR 覆盖；否则默认取「运行工作目录/data」
+// （即 postsup bin/ 胶囊顶层 data/，不再跟随二进制所在位置，消除 bin/data vs data/ 二义性）。
+// 注：supervisor 已把 directory 指向 app 根目录，故默认落到 apps/<app>/data。
 func dataDir() string {
-	exe, err := os.Executable()
+	if d := os.Getenv("DEFENDER_DATA_DIR"); d != "" {
+		return d
+	}
+	wd, err := os.Getwd()
 	if err != nil {
 		return "data"
 	}
-	return filepath.Join(filepath.Dir(exe), "data")
+	return filepath.Join(wd, "data")
 }
 
 // isPrivateOrLoopback 判断是否为私网/回环/保留地址。
