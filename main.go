@@ -1,13 +1,15 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.0.2)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.1.0)
+// v3.1.0: SSH 攻击「目标端口」归因——新增 FrpsAttackLoop 解析 frps.log，
+//         事件流/TOP IP 展示每条攻击命中的目标端口（frp 隧道端口或 :22）。
 // 结构标准化：数据目录改为「运行目录/data」（DEFENDER_DATA_DIR 可覆盖），不再跟二进制走；
 // 清理 internal/store 死代码、根目录旧二进制/备份，补齐 config/logs/skill/doc/test 标准目录。
-// v3.0.1: 攻击日历改近一年(365天)+格子14px，铺满卡片消除空置。
 // 单二进制，内含 Web 面板 + 后台常驻协程：
 //   - usernames_loop: journalctl sshd 实时封禁(境外/风暴)
 //   - reaper_loop:    巡检收割失控孤儿进程
 //   - history_loop:   NetMon 10 分钟采样
 //   - webmon_loop:    域名访问监控（nginx 日志 tail / IP 聚合 / 趋势 / 告警）
 //   - frps_ssh_loop:  每日识别 frp SSH 隧道端口并同步 frps-ssh 防御(自动) + 端口有效性判定
+//   - frps_attack_loop: 实时 tail frps.log 记录 SSH 攻击命中隧道（目标端口归因）
 //
 // 全程仅用 Go 标准库，前端 HTML/CSS/JS/Chart.js 通过 //go:embed 打包。
 package main
@@ -37,6 +39,8 @@ func main() {
 	go service.WebMonLoop(done)
 	// frps-ssh：每日识别 frp SSH 隧道端口并同步 frps-ssh 防御（banner 探测 + 端口有效性判定）
 	go service.FrpsSSHLoop(done)
+	// frps-attack：实时 tail frps.log 记录 SSH 攻击命中隧道（目标端口归因，供事件流/TOP IP 展示）
+	go service.FrpsAttackLoop(done)
 
 	// 解析静态资源
 	sub, err := fs.Sub(staticFS, "internal/static")
@@ -148,7 +152,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v3.0.2 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v3.1.0 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)

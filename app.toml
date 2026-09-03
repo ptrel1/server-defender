@@ -1,7 +1,7 @@
 # server-defender —— 由 postsup 统一纳管（go-single 单二进制部署）
 # 部署对齐原则：supervisor 与 postsup 均指向 bin/server-defender（见 skill/memory.md 2026-09-03 铁律）
 name = "server-defender"
-version = "v2.3.1"
+version = "v3.1.0"
 deploy_type = "go-single"
 supervisor_service = "psup-server-defender"
 deploy_user = "root"

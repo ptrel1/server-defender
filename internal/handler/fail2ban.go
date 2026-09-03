@@ -263,7 +263,7 @@ func RenderTopIPsHTML(tops []TopCounter) string {
 		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>暂无高频攻击记录</span></div>"
 	}
 	var sb strings.Builder
-	sb.WriteString("<table><tr><th>#</th><th>攻击来源 IP</th><th>归属地</th><th>探测次数</th><th>最近活跃</th></tr>")
+	sb.WriteString("<table><tr><th>#</th><th>攻击来源 IP</th><th>归属地</th><th>目标端口</th><th>探测次数</th><th>最近活跃</th></tr>")
 	for i, item := range tops {
 		loc, ok := service.QueryGeoFast(item.Name)
 		if !ok {
@@ -273,8 +273,8 @@ func RenderTopIPsHTML(tops []TopCounter) string {
 		if last == "" {
 			last = "-"
 		}
-		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag %s\">%d 次</span></td><td class=\"time-cell\">%s</td></tr>",
-			i+1, item.Name, IPTagBadgeHTML(item.Name), loc, tagDangerCls(item.Count), item.Count, last)
+		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td><td><span class=\"tag tag-blue\">%s</span></td><td><span class=\"tag %s\">%d 次</span></td><td class=\"time-cell\">%s</td></tr>",
+			i+1, item.Name, IPTagBadgeHTML(item.Name), loc, service.AttackedPortsLabel(item.Name), tagDangerCls(item.Count), item.Count, last)
 	}
 	return sb.String() + "</table>"
 }
@@ -297,7 +297,7 @@ func RenderRecentHTML(recent []RecentEntry) string {
 		return "<div class=\"empty-state\"><div class=\"empty-icon\">✅</div><span>暂无攻击记录</span></div>"
 	}
 	var sb strings.Builder
-	sb.WriteString("<table><tr><th>#</th><th>时间</th><th>尝试账号</th><th>来源 IP</th><th>归属地</th></tr>")
+	sb.WriteString("<table><tr><th>#</th><th>时间</th><th>尝试账号</th><th>来源 IP</th><th>目标端口</th><th>归属地</th></tr>")
 	for i, r := range recent {
 		loc, ok := service.QueryGeoFast(r.IP)
 		if !ok {
@@ -307,7 +307,7 @@ func RenderRecentHTML(recent []RecentEntry) string {
 		if ts == "" {
 			ts = "-"
 		}
-		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"time-cell\">%s</td><td class=\"user-cell\">%s</td><td class=\"ip-cell\">%s%s</td><td style=\"color:var(--text-secondary)\">%s</td></tr>", i+1, ts, r.User, r.IP, IPTagBadgeHTML(r.IP), loc)
+		fmt.Fprintf(&sb, "<tr><td>%d</td><td class=\"time-cell\">%s</td><td class=\"user-cell\">%s</td><td class=\"ip-cell\">%s%s</td><td><span class=\"tag tag-blue\">%s</span></td><td style=\"color:var(--text-secondary)\">%s</td></tr>", i+1, ts, r.User, r.IP, IPTagBadgeHTML(r.IP), service.AttackedPortsLabel(r.IP), loc)
 	}
 	return sb.String() + "</table>"
 }

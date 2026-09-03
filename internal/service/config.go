@@ -19,6 +19,10 @@ type DefenderConfig struct {
 	RelayHost     string `json:"relay_host"`    // 中转机 ssh 地址（同步封禁用）
 	NotifyCmd     string `json:"notify_cmd"`    // 封禁通知命令（sh 执行；可用 $BAN_IP/$BAN_REASON/$BAN_LOCATION/$BAN_TIME 环境变量；空=关闭）
 	GeoMemTTLH    int    `json:"geo_mem_ttl_h"` // geo 内存缓存 TTL（小时）
+	// FrpsTunnelPorts frp 隧道名 -> 公网目标端口 映射（SSH 攻击目标端口归因用，热加载）。
+	// key 为 frps.log `get a user connection` 行中的隧道名（如 b2.ssh），value 为远端端口（如 50022）。
+	// 缺失映射时面板对观测到的 frp 隧道攻击显示"frp 隧道组"而非具体端口。
+	FrpsTunnelPorts map[string]int `json:"frps_tunnel_ports,omitempty"`
 }
 
 var (
@@ -35,6 +39,11 @@ func defaultConfig() DefenderConfig {
 		RelayHost:     "root@47.98.244.173",
 		NotifyCmd:     "",
 		GeoMemTTLH:    24,
+		// 内置当前已知 SSH 隧道名->远端端口（可在 data/config.json 增补，最权威）。
+		// 说明：frps 服务端无静态清单，故此处为人工基线 + 运行时热加载覆盖。
+		FrpsTunnelPorts: map[string]int{
+			"b2.ssh": 50022, // 客户端机 b2 SSH 隧道
+		},
 	}
 }
 
