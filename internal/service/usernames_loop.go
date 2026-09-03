@@ -19,18 +19,13 @@ type UsernamesState struct {
 }
 
 type IPRecord struct {
-	Users    []string              `json:"users"`
-	Fail     map[string]*UserFail  `json:"fail,omitempty"` // 每个账号的失败计数（单账号爆破判据）
-	Banned   bool                  `json:"banned"`
-	Reason   string                `json:"reason,omitempty"`
-	Location string                `json:"location,omitempty"`
-	Time     string                `json:"time,omitempty"`
-}
-
-// UserFail 单个账号在统计窗口内的失败计数。
-type UserFail struct {
-	Count int    `json:"count"`          // 窗口内累计失败次数
-	Last  string `json:"last,omitempty"` // 最近一次失败时间（2006-01-02 15:04:05）
+	Users []string `json:"users"`
+	// FailTimes 窗口内失败时间戳（ISO8601 秒级），滑动窗口用于速率封禁判据。
+	FailTimes []string `json:"fail_times,omitempty"`
+	Banned    bool     `json:"banned"`
+	Reason    string   `json:"reason,omitempty"`
+	Location  string   `json:"location,omitempty"`
+	Time      string   `json:"time,omitempty"`
 }
 
 const (
@@ -286,36 +281,26 @@ func handleSSHLine(state *UsernamesState, line string, lastSave *time.Time) bool
 	}
 	geo := QueryGeo(ip)
 
-	// 单账号爆破计数（堵"国内 IP 只试一个账号"的盲区，与 geo 无关，境内境外一视同仁）
+	// 请求速率爆破计数（堵"国内 IP 高频单账号/多账号"盲区；与 geo 无关，境内境外一视同仁）
+	// 60 分钟 1000 次为宽松阈值，避免智能体尝试旧密码等少量合理失败被误封。
 	cfg := Conf()
-	if cfg.SingleAccountThreshold > 0 {
+	if cfg.RateThreshold > 0 {
 		now := time.Now()
-		window := time.Duration(cfg.SingleAccountWindowMin) * time.Minute
+		window := time.Duration(cfg.RateWindowMin) * time.Minute
 		if window <= 0 {
-			window = 10 * time.Minute
+			window = 60 * time.Minute
 		}
-		if rec.Fail == nil {
-			rec.Fail = map[string]*UserFail{}
-		}
-		// 丢弃窗口外旧计数，避免历史失败无限累积
-		for u, f := range rec.Fail {
-			if f == nil {
-				delete(rec.Fail, u)
-				continue
-			}
-			if t, err := time.ParseInLocation("2006-01-02 15:04:05", f.Last, time.Local); err == nil && now.Sub(t) > window {
-				delete(rec.Fail, u)
+		rec.FailTimes = append(rec.FailTimes, now.Format(time.RFC3339))
+		// 滑动窗口：丢弃窗口外旧时间戳
+		kept := rec.FailTimes[:0]
+		for _, s := range rec.FailTimes {
+			if t, err := time.Parse(time.RFC3339, s); err == nil && now.Sub(t) <= window {
+				kept = append(kept, s)
 			}
 		}
-		f := rec.Fail[user]
-		if f == nil {
-			f = &UserFail{}
-			rec.Fail[user] = f
-		}
-		f.Count++
-		f.Last = now.Format("2006-01-02 15:04:05")
-		if f.Count >= cfg.SingleAccountThreshold {
-			return banIPOnce(state, ip, fmt.Sprintf("单账号爆破 (%s x%d)", user, f.Count), geo.Location)
+		rec.FailTimes = kept
+		if len(rec.FailTimes) >= cfg.RateThreshold {
+			return banIPOnce(state, ip, fmt.Sprintf("高频爆破 (%d m内%d次)", cfg.RateWindowMin, len(rec.FailTimes)), geo.Location)
 		}
 	}
 
