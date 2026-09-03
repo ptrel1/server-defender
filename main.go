@@ -1,4 +1,4 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.0.1)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.0.2)
 // 结构标准化：数据目录改为「运行目录/data」（DEFENDER_DATA_DIR 可覆盖），不再跟二进制走；
 // 清理 internal/store 死代码、根目录旧二进制/备份，补齐 config/logs/skill/doc/test 标准目录。
 // v3.0.1: 攻击日历改近一年(365天)+格子14px，铺满卡片消除空置。
@@ -148,7 +148,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v3.0.1 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v3.0.2 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)

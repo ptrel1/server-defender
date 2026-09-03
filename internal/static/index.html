@@ -642,9 +642,9 @@ function renderCalendar(days) {
   // 左侧周几锚点（周一/周三/周五）
   html += '<div class="att-cal-weekday-col">' + ['一', '', '三', '', '五', '', ''].map(w => '<div class="att-cal-wd">' + w + '</div>').join('') + '</div>';
   html += '<div class="att-cal-grid">';
-  for (let cIdx = 0; cIdx < cols.length; cIdx++) {
+  for (let r = 0; r < 7; r++) {
     html += '<div class="att-cal-row">';
-    for (let r = 0; r < 7; r++) {
+    for (let cIdx = 0; cIdx < cols.length; cIdx++) {
       const cell = cols[cIdx] && cols[cIdx][r];
       if (!cell) { html += '<div class="att-cal-cell l0"></div>'; continue; }
       const v = cell.count + cell.real;
