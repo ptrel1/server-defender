@@ -11,6 +11,16 @@
 - ✅ **前端内嵌**：HTML/CSS/JS/Chart.js 通过 `//go:embed` 打包进二进制，无外部静态目录
 - ✅ **数据兼容**：`data/*.json` 数据结构与 Python 版一致，迁移不丢历史封禁/事件
 
+## 🚀 v3.2.0 新增（2026-09-04）——进程级安全 + 文件完整性（复刻 Pickai 事件杀招）
+
+2026-09-04 主机遭 Pickai/ComfyUI 长期 root 入侵（详见 ptrelskill `incident/20260904_comfyui-attack/`），复盘出两个「靠新增文件木马扫不出来的」高价值信号，固化为常驻监控：
+
+- 🔍 **ProcGuard——伪装内核线程检测**：真实内核线程的 `/proc/PID/exe` 不可读；凡 `comm` 以 `[` 开头但 exe 可解析出 ELF 路径的进程，即 userland 木马伪装（本次 `[kworker/R-rcu] → pam-helper` 就是靠这条抓到的）。周期 60s，`/api/procguard`。
+- 🔍 **ProcGuard——setuid-root 掉包检测**：全盘扫 `-perm -4000 -user root`，与白名单基线（`data/procguard_setuid_allowlist.json`）比对，新增/变更即告警。本次 `/usr/bin/false` 被换成 1.1MB setuid-root 后门即属此类。
+- 🧩 **FileIntegrity——文件完整性校验**：周期跑 `pacman -Qkk`（Arch）或 `debsums -c`（Debian），抓「N 变化的文件≠0」项，重点聚焦 `/usr`、`/usr/lib`、`/usr/libexec`、systemd 二进制掉包。`/api/fileintegrity`，`nice -n 19` 低优先级。
+
+⚠️ **部署纪律**：ProcGuard 的 setuid 白名单是「干净机生成基线+增量比对」模型，**必须在重装后的可信机器上首次运行生成基线**；若在已失陷机器上首跑会把已植入后门洗白。文件完整性校验信任本地包数据库（pacman/dpkg），同样只在干净机上有意义。
+
 ## 🚀 v3.1.0 新增（2026-09-03）——SSH 攻击「目标端口」归因
 
 SSH 防御已并入 frp SSH 隧道（frps-ssh），攻击目标不再只有本机 22，还包含公网隧道端口（50022/50122/52222）。真实 sshd 只监听 22，`lastb`/journalctl 无法区分攻击走哪条隧道，故新增 `FrpsAttackLoop` 从 **frps.log** 归因目标端口：

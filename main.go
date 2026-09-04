@@ -1,4 +1,7 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.1.0)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.2.0)
+// v3.2.0: 进程级安全(ProcGuard) + 文件完整性(FileIntegrity)——复刻 2026-09-04 Pickai/ComfyUI
+//         入侵复盘的两个杀招：userland 伪装内核线程检测 + setuid-root 掉包检测 +
+//         pacman -Qkk / debsums 系统文件完整性校验。
 // v3.1.0: SSH 攻击「目标端口」归因——新增 FrpsAttackLoop 解析 frps.log，
 //         事件流/TOP IP 展示每条攻击命中的目标端口（frp 隧道端口或 :22）。
 // 结构标准化：数据目录改为「运行目录/data」（DEFENDER_DATA_DIR 可覆盖），不再跟二进制走；
@@ -10,6 +13,8 @@
 //   - webmon_loop:    域名访问监控（nginx 日志 tail / IP 聚合 / 趋势 / 告警）
 //   - frps_ssh_loop:  每日识别 frp SSH 隧道端口并同步 frps-ssh 防御(自动) + 端口有效性判定
 //   - frps_attack_loop: 实时 tail frps.log 记录 SSH 攻击命中隧道（目标端口归因）
+//   - procguard_loop:  进程级安全——userland 伪装内核线程 + setuid-root 掉包检测
+//   - fileintegrity_loop: 文件完整性——pacman -Qkk / debsums -c 抓系统文件掉包
 //
 // 全程仅用 Go 标准库，前端 HTML/CSS/JS/Chart.js 通过 //go:embed 打包。
 package main
@@ -41,6 +46,12 @@ func main() {
 	go service.FrpsSSHLoop(done)
 	// frps-attack：实时 tail frps.log 记录 SSH 攻击命中隧道（目标端口归因，供事件流/TOP IP 展示）
 	go service.FrpsAttackLoop(done)
+	// procguard：进程级安全——userland 伪装内核线程 + setuid-root 掉包检测（v3.2.0 新增）
+	service.LoadProcGuard()
+	go service.ProcGuardLoop(done)
+	// fileintegrity：文件完整性校验——pacman -Qkk / debsums -c 抓系统文件掉包（v3.2.0 新增）
+	service.LoadFileIntegrity()
+	go service.FileIntegrityLoop(done)
 
 	// 解析静态资源
 	sub, err := fs.Sub(staticFS, "internal/static")
@@ -125,6 +136,12 @@ func main() {
 	mux.HandleFunc("/api/webmon", func(w http.ResponseWriter, r *http.Request) {
 		handler.WriteJSON(w, handler.WebMonData())
 	})
+
+	// 进程级安全（伪内核线程 + setuid-root 掉包）——v3.2.0 新增
+	mux.HandleFunc("/api/procguard", handler.ProcGuardDataHandler)
+
+	// 文件完整性（pacman -Qkk / debsums -c 抓系统文件掉包）——v3.2.0 新增
+	mux.HandleFunc("/api/fileintegrity", handler.FileIntegrityDataHandler)
 
 	// 前端日志上报（浏览器 JS 异常 / 环境快照，排查本地渲染问题）
 	mux.HandleFunc("/api/client_log", handler.PostClientLog)
