@@ -11,6 +11,15 @@
 - ✅ **前端内嵌**：HTML/CSS/JS/Chart.js 通过 `//go:embed` 打包进二进制，无外部静态目录
 - ✅ **数据兼容**：`data/*.json` 数据结构与 Python 版一致，迁移不丢历史封禁/事件
 
+## 🚀 v3.2.1 新增（2026-09-04）——启动面基线 BootGuard（拦截「开机自启木马」）
+
+2026-09-04 复盘确认「启动即复活」是持久化核心入口之一，固化为 BootGuard：**枚举全部开机执行路径，干净机首跑建基线，dirty diff 第一时间报新增/缺失**。
+
+- 🔒 **覆盖启动执行面**：systemd enabled（service/timer，含用户级）、cron @reboot 与 /etc/cron.*、SysV /etc/init.d + /etc/rc*.d、PAM 钩子、/etc/ld.so.preload、/etc/profile.d、内核模块自启（modules-load.d / modprobe.d）、/boot 内核对账、UEFI 启动项（bootkit 检测）。
+- 🎯 **核心能力 = diff**：任何人往启动面加一条 unit/rc 链/pam_exec/preload.so/@reboot，基线里没有 → 立即 added 告警；删除/替换基线项 → missing 告警。「改了一第一时间发现」。
+- 🚦 **接口**：`/api/bootguard`（快照）、`POST /api/bootguard/baseline`（运维确认后重建基线）。低频 30min。
+- ⚠️ **部署纪律**：同 ProcGuard/FileIntegrity——**必须在重装后干净机首跑建基线**，失陷机首跑会把残留启动项洗白。已在隔离测试验证 diff 检出注入（added/missing 均正确）。
+
 ## 🚀 v3.2.0 新增（2026-09-04）——进程级安全 + 文件完整性（复刻 Pickai 事件杀招）
 
 2026-09-04 主机遭 Pickai/ComfyUI 长期 root 入侵（详见 ptrelskill `incident/20260904_comfyui-attack/`），复盘出两个「靠新增文件木马扫不出来的」高价值信号，固化为常驻监控：

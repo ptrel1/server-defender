@@ -1,4 +1,6 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.2.0)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.2.1)
+// v3.2.1: 启动面基线(BootGuard)——枚举全部开机执行路径(systemd/cron/sysv/pam/preload/
+//         profile/module/boot/uefi)，干净机身基线+dirty diff，拦截"开机自动拉起"类持久化。
 // v3.2.0: 进程级安全(ProcGuard) + 文件完整性(FileIntegrity)——复刻 2026-09-04 Pickai/ComfyUI
 //         入侵复盘的两个杀招：userland 伪装内核线程检测 + setuid-root 掉包检测 +
 //         pacman -Qkk / debsums 系统文件完整性校验。
@@ -52,6 +54,9 @@ func main() {
 	// fileintegrity：文件完整性校验——pacman -Qkk / debsums -c 抓系统文件掉包（v3.2.0 新增）
 	service.LoadFileIntegrity()
 	go service.FileIntegrityLoop(done)
+	// bootguard：启动面基线——枚举开机执行路径(systemd/cron/sysv/pam/preload/profile/module/boot/uefi)，diff 拦截开机自启木马（v3.2.1 新增）
+	service.LoadBootGuard()
+	go service.BootGuardLoop(done)
 
 	// 解析静态资源
 	sub, err := fs.Sub(staticFS, "internal/static")
@@ -144,6 +149,10 @@ func main() {
 
 	// 文件完整性（pacman -Qkk / debsums -c 抓系统文件掉包）——v3.2.0 新增
 	mux.HandleFunc("/api/fileintegrity", handler.FileIntegrityDataHandler)
+
+	// 启动面基线（systemd/cron/sysv/pam/preload/profile/module/boot/uefi 枚举+diff）——v3.2.1 新增
+	mux.HandleFunc("/api/bootguard", handler.BootGuardDataHandler)
+	mux.HandleFunc("/api/bootguard/baseline", handler.BootRebuildBaselineHandler)
 
 	// 前端日志上报（浏览器 JS 异常 / 环境快照，排查本地渲染问题）
 	mux.HandleFunc("/api/client_log", handler.PostClientLog)
