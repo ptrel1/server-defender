@@ -11,6 +11,15 @@
 - ✅ **前端内嵌**：HTML/CSS/JS/Chart.js 通过 `//go:embed` 打包进二进制，无外部静态目录
 - ✅ **数据兼容**：`data/*.json` 数据结构与 Python 版一致，迁移不丢历史封禁/事件
 
+## 🚀 v3.3.0 新增（2026-09-04）——执行来源追溯 ProcTrace（回答「命令从哪进来」）
+
+基于 auditd 的 execve 审计（`ausearch -k PROC_EXEC`，本机已配），对可疑进程回查父链，定位攻击路径。
+
+- 🔍 **来源画像**：对 ProcGuard 发现的伪 kernel 线程等可疑 PID，回溯父链 + 触发环节——判定由 **PAM 钩子 / SSH 会话 / cron-timer / su-sudo / systemd 拉起 / shell** 哪个触发。
+- 📡 **数据源**：auditd 现成（`-a always,exit -S execve -k PROC_EXEC`），`ausearch` 拉 PID/PPID/comm/exe/auid，`aureport -x` 带 host 会话来源。60s 刷新，落盘 `data/proctrace.json`。
+- 🧪 **纯函数可单测**：`resolveSource` 不依赖真实 auditd，已验证「pam-helper→pam_exec(登录)」「sh→sshd」「PID超保留期→不可追溯」三种来源判定。
+- ⚠️ **边界**：追溯「本地谁触发/谁拉起」，**非公网来源 IP**（web/RCE 的 IP 需 access 日志）；受 audit 保留期限制，过远 exec 已轮转追不到——价值在「今后再发生能当场溯源」，同属重装后干净机防线。
+
 ## 🚀 v3.2.1 新增（2026-09-04）——启动面基线 BootGuard（拦截「开机自启木马」）
 
 2026-09-04 复盘确认「启动即复活」是持久化核心入口之一，固化为 BootGuard：**枚举全部开机执行路径，干净机首跑建基线，dirty diff 第一时间报新增/缺失**。
