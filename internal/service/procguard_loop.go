@@ -36,9 +36,14 @@ import (
 )
 
 const (
-	procGuardInterval = 60 * time.Second
-	procGuardMaxAlert = 200 // 告警留存上限
+	procGuardInterval    = 60 * time.Second  // 进程扫描（轻量，读 /proc）
+	procGuardSetuidEvery = 10 * time.Minute // setuid 全盘扫描（重 IO，独立低频周期）
+	procGuardMaxAlert    = 200              // 告警留存上限
 )
+
+// setuidWalkRoots：setuid 扫描的关键目录（排除 /var /home 等大目录，避免 60s 周期拖垮 IO）。
+// 后门提权文件绝大多数落在系统可执行区；/var /home 因体积与 owner 复杂度高，不作为默认扫描面。
+var setuidWalkRoots = []string{"/usr", "/opt", "/srv", "/root", "/bin", "/sbin", "/etc"}
 
 type ProcAlert struct {
 	Time    string `json:"time"`
@@ -159,60 +164,63 @@ func listProcDirs() []string {
 
 // scanSetuid 全盘扫描 setuid-root 文件，与白名单比对，返回新增/变更告警与当前全集。
 func scanSetuid() (alerts []ProcAlert, full []string) {
-	allow := loadSetuidAllow()
-	// filepath.WalkDir 只走受控路径，避免扫 /proc /sys
-	var paths []string
-	walkRoots := []string{"/usr", "/opt", "/srv", "/var", "/home", "/root", "/bin", "/sbin", "/etc"}
-	for _, r := range walkRoots {
-		_ = filepath.WalkDir(r, func(p string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			info, err := d.Info()
-			if err != nil || info.Mode()&0o4000 == 0 { // setuid bit
-				return nil
-			}
-			// 仅统计 owner root 的 setuid（后门提权标志）
-			if info.Sys() != nil && strings.HasPrefix(p, "/") {
-				paths = append(paths, p)
-			}
-			return nil
-		})
-	}
-	sort.Strings(paths)
-	now := time.Now().Format("2006-01-02 15:04:05")
+now := time.Now().Format("2006-01-02 15:04:05")
+// 只读基础快照：攻击者删除setuid重置后门、或首轮建立基线后，后续轮次不允许静默覆盖基线。
+// 基线的唯一写入时机是「首次运行时建立」；此后每轮只读，报告新增与缺失，由运维人工确认后
+// 通过 POST /api/procguard/baseline 显式重建。这样可避免「失陷机首跑洗白」与「有条件覆盖掩盖复活」。
+allow := loadSetuidAllow()
 
-	// 首次无白名单：生成基线（告警留给运行时快照展示「基线已建立」）
-	if allow == nil {
-		_ = atomicWrite(setuidAllowPath(), mustJSON(paths))
-		for i := range paths {
-			_ = i
-		}
-		return nil, paths
-	}
-	// 有基线：找新增
-	newSet := make(map[string]bool)
-	for _, p := range paths {
-		if !allow[p] {
-			newSet[p] = true
-			info, _ := os.Stat(p)
-			sz := int64(0)
-			if info != nil {
-				sz = info.Size()
-			}
-			alerts = append(alerts, ProcAlert{
-				Time: now, Kind: "setuid", Path: p, Size: sz,
-				Message: "检测到新增 setuid-root 文件(提权后门信号): " + p,
-			})
-		}
-	}
-	// 更新白名单（把当前全集并入，避免重复告警已知项；但仍保留新增告警供本次展示）
-	merged := make([]string, 0, len(paths))
-	for _, p := range paths {
-		merged = append(merged, p)
-	}
-	_ = atomicWrite(setuidAllowPath(), mustJSON(merged))
-	return alerts, paths
+var paths []string
+for _, r := range setuidWalkRoots {
+_ = filepath.WalkDir(r, func(p string, d os.DirEntry, err error) error {
+if err != nil || d.IsDir() {
+return nil
+}
+info, err := d.Info()
+if err != nil || info.Mode()&0o4000 == 0 { // setuid bit
+return nil
+}
+// 仅记 owner root 的 setuid（后门提权标志）
+if info.Sys() != nil {
+paths = append(paths, p)
+}
+return nil
+})
+}
+sort.Strings(paths)
+
+// 首次：建立基线（写入权威快照），不当作告警（运维应确认此刻系统可信）。
+if allow == nil {
+_ = atomicWrite(setuidAllowPath(), mustJSON(paths))
+return nil, paths
+}
+
+// 有基线：新增告警（后门常以新增 setuid 提权文件出现）
+current := make(map[string]bool, len(paths))
+for _, p := range paths {
+current[p] = true
+if !allow[p] {
+info, _ := os.Stat(p)
+sz := int64(0)
+if info != nil {
+sz = info.Size()
+}
+alerts = append(alerts, ProcAlert{
+Time: now, Kind: "setuid", Path: p, Size: sz,
+Message: "检测到新增 setuid-root 文件(提权后门信号): " + p,
+})
+}
+}
+// 缺失告警：白名单项消失也可能是攻击者清理提权痕迹、或文件被删但进程仍以高权限留存。
+for base := range allow {
+if !current[base] {
+alerts = append(alerts, ProcAlert{
+Time: now, Kind: "setuid", Path: base,
+Message: "基线 setuid-root 文件消失(可能被清理或掉包): " + base,
+})
+}
+}
+return alerts, paths
 }
 
 // mustJSON 编码 JSON；失败返回空数组。
@@ -225,35 +233,41 @@ func mustJSON(v interface{}) []byte {
 }
 
 // ProcGuardLoop 常驻协程，周期扫描并落盘。由 main.go 启动。
+// setuid 全盘扫描走独立低频周期（默认 10 分钟），避免 60s 进程扫描与重 IO 的 setuid 扫相互干扰。
 func ProcGuardLoop(done chan struct{}) {
-	// 首轮立即执行一次，便于即时出数据
-	procGuardOnce()
+	// 首轮立即各执行一次，便于即时出数据
+	procGuardOnce(true)
 	ticker := time.NewTicker(procGuardInterval)
 	defer ticker.Stop()
+	uidEvery := int(procGuardSetuidEvery / procGuardInterval) // 每 N 个 tick 跑一次 setuid
+	tick := 0
 	for {
 		select {
 		case <-done:
 			return
 		case <-ticker.C:
-			procGuardOnce()
+			tick++
+			procGuardOnce(tick%uidEvery == 0)
 		}
 	}
 }
 
-// procGuardOnce 单轮扫描 + 持久化。
-func procGuardOnce() {
+// procGuardOnce 单轮扫描 + 持久化。doSetuid 控制本轮是否执行重 IO 的 setuid 全盘扫描。
+func procGuardOnce(doSetuid bool) {
 	var alerts []ProcAlert
 	fk := scanProcGuard()
-	setuidAlerts, full := scanSetuid()
-	alerts = append(alerts, fk...)
-	alerts = append(alerts, setuidAlerts...)
+	if doSetuid {
+		setuidAlerts, full := scanSetuid()
+		alerts = append(alerts, setuidAlerts...)
+		procGuardSetuidLatest = full
+	}
 	if len(alerts) > procGuardMaxAlert {
 		alerts = alerts[len(alerts)-procGuardMaxAlert:]
 	}
 	snap := ProcGuardSnapshot{
 		Updated:       time.Now().Format("2006-01-02 15:04:05"),
 		Alerts:        alerts,
-		SetuidAllow:   full,
+		SetuidAllow:   procGuardSetuidLatest,
 		FakeKthreads: len(fk),
 	}
 	_ = atomicWrite(procGuardPath(), mustJSON(snap))
@@ -261,6 +275,9 @@ func procGuardOnce() {
 	procGuardLatest = snap
 	procGuardMu.Unlock()
 }
+
+// procGuardSetuidLatest 保存最近一次 setuid 扫描结果（供快照回显，未到周期时复用上一轮）。
+var procGuardSetuidLatest []string
 
 // ProcGuardData 供 handler 读取最新快照。
 func ProcGuardData() ProcGuardSnapshot {
@@ -281,5 +298,15 @@ func LoadProcGuard() {
 	}
 	procGuardMu.Lock()
 	procGuardLatest = s
+	procGuardSetuidLatest = s.SetuidAllow
 	procGuardMu.Unlock()
+}
+// RebuildSetuidBaseline 把当前 setuid 全集重建为权威基线（运维人工确认后调用）。
+// 避免「失陷机首跑洗白」与「只读基线无法清掉误报」。返回是否成功。
+func RebuildSetuidBaseline() bool {
+_, full := scanSetuid()
+if full == nil {
+return false
+}
+return atomicWrite(setuidAllowPath(), mustJSON(full)) == nil
 }

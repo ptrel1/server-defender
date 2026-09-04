@@ -139,6 +139,8 @@ func main() {
 
 	// 进程级安全（伪内核线程 + setuid-root 掉包）——v3.2.0 新增
 	mux.HandleFunc("/api/procguard", handler.ProcGuardDataHandler)
+	// 运维确认后重建 setuid 基线（只读基线模型需显式重建）
+	mux.HandleFunc("/api/procguard/baseline", handler.RebuildBaselineHandler)
 
 	// 文件完整性（pacman -Qkk / debsums -c 抓系统文件掉包）——v3.2.0 新增
 	mux.HandleFunc("/api/fileintegrity", handler.FileIntegrityDataHandler)
