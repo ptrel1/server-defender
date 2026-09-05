@@ -1,4 +1,5 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.3.0)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.3.1)
+// v3.3.1: Reaper 误杀治理——CPU 持续采样确认 + grep/find 遍历参数豁免 + 文案分钟数修正。
 // v3.3.0: 执行来源追溯(ProcTrace)——基于 auditd execve 审计，对可疑进程回查父链，
 //         回答"命令从哪个入口/谁触发进来的"(PAM/SSH/cron/su/systemd 触发判定)。
 // v3.2.1: 启动面基线(BootGuard)——枚举全部开机执行路径(systemd/cron/sysv/pam/preload/

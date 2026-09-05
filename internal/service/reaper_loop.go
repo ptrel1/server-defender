@@ -162,19 +162,35 @@ func inspectAndReap() []ReapEvent {
 		if parseElapsed(etime) < maxRuntime {
 			continue
 		}
+		// 遍历豁免：带 -R/-r/--include/--exclude/目录路径 的 grep/find/sed/awk 长任务
+		// 是合法的全盘扫描/日志过滤（可跑很久且占 CPU），不是失控肿瘤，跳过收割。
+		if targetCommands[baseComm] && isTraversalTask(fields[7:]) {
+			continue
+		}
 		isOrphan := ppid == 1
-		isHigh := cpu >= highCPU
+		// CPU 持续采样：单点快照可能是瞬时 spike（系统负载抖动），间隔 2s 二次采样，
+		// 两次都 ≥ highCPU 才算"持续高占用"，避免误杀瞬时尖峰。
+		isHigh := false
+		if cpu >= highCPU {
+			isHigh = confirmHighCPU(pid, cpu)
+		}
+		// 收割条件：持续高CPU(死循环/失控) 或 (非持续高但高危管道命令且孤儿&&真的高)
+		// ——保留原"孤儿 或 高CPU"精神，但高CPU用"持续"判定；纯孤儿但 CPU 不高的
+		// 长任务(被 systemd 领养的后台合法任务)不杀，避免把孤儿=失控一刀切。
 		if !isOrphan && !isHigh {
 			continue
+		}
+		if isOrphan && !isHigh {
+			continue // 孤儿但 CPU 不高：后台合法长任务，放过
 		}
 		reasons := []string{}
 		if isOrphan {
 			reasons = append(reasons, "孤儿进程(PPID=1)")
 		}
 		if isHigh {
-			reasons = append(reasons, fmt.Sprintf("高CPU占用(%.0f%%)", cpu))
+			reasons = append(reasons, fmt.Sprintf("持续高CPU(%.0f%%)", cpu))
 		}
-		reason := fmt.Sprintf("运行已达 %s (>%d分钟), %s", etime, maxRuntime/600, strings.Join(reasons, ", "))
+		reason := fmt.Sprintf("运行已达 %s (>%d分钟), %s", etime, int(maxRuntime/time.Minute), strings.Join(reasons, ", "))
 		fmt.Printf("[reaper] 发现失控进程 PID=%d COMM=%s 原因:%s\n", pid, fields[6], reason)
 
 		// 优雅终止 → 强杀
@@ -242,3 +258,42 @@ func ReaperLoop(done <-chan struct{}) {
 }
 
 // 以下为等价导出入口，供 handler 使用。
+// confirmHighCPU 二次采样确认 CPU 持续高占用（间隔 2s）。
+// 返回是否两次 %CPU 均 ≥ highCPU（60% 阈值兼容原 50% 并留余量）。
+// 设计：单点快照可能是瞬时 spike（系统负载抖动/并行突发），孤儿进程库收割前用持续采样
+// 避免误杀真实的长任务（如全盘扫描短暂占满 CPU 后又回落）。
+func confirmHighCPU(pid int, baseCPU float64) bool {
+const sample = 2 * time.Second
+if baseCPU >= highCPU {
+time.Sleep(sample)
+}
+// 二次采样当前 %CPU
+out := runOut(3*time.Second, "ps", "-o", "%cpu=", "-p", strconv.Itoa(pid))
+ps := strings.TrimSpace(out)
+var second float64
+if ps != "" {
+second, _ = strconv.ParseFloat(ps, 64)
+}
+// 进程可能已退出(ps 取不到) → 视为已结束，不再收割(避免杀已死进程)
+if ps == "" {
+return false
+}
+return baseCPU >= highCPU && second >= highCPU
+}
+
+// isTraversalTask 判断 grep/find/sed/awk 等是否带"遍历/全盘/过滤"参数——这些是合法长任务，
+// 常运行很久且占 CPU，误杀会打断真实运维工作。命中即视为合法，跳过收割。
+func isTraversalTask(args []string) bool {
+for _, a := range args {
+switch {
+case a == "-R", a == "-r", a == "--include", a == "--include=",
+a == "--exclude", a == "--exclude=", a == "-I",
+strings.HasPrefix(a, "--include"), strings.HasPrefix(a, "--exclude"):
+return true
+case strings.HasPrefix(a, "/"), strings.Contains(a, ".."), strings.Contains(a, "*.log"),
+strings.Contains(a, "*.txt"), strings.Contains(a, "package.json"):
+return true
+}
+}
+return false
+}
