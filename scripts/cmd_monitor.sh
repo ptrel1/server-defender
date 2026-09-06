@@ -4,13 +4,16 @@
 # 告警日志: /home/a1/cmd_alarm.log；状态文件记录上次检查位置，避免重复告警
 # 边界: 只读+追加日志，不自动清理（清理仍由 auto_clean.sh 决策）；依赖 auditd
 
-LOG=/home/a1/cmd_alarm.log
-STATE=/tmp/cmd_monitor_offset
+# v1.1 (20260906): 配置外置 /etc/defender-monitor.conf，root 身份运行
+CONFIG=/etc/defender-monitor.conf
+[ -f "$CONFIG" ] && . "$CONFIG" || { echo "missing $CONFIG"; exit 1; }
+LOG="$LOGDIR/cmd_alarm.log"
+STATE="$CACHE_DIR/cmd_monitor.offset"
 AUDIT_LOG=/var/log/audit/audit.log
+mkdir -p "$CACHE_DIR" "$LOGDIR"
 PATTERNS='curl[^"]*\|(ba)?sh|wget[^"]*\|(ba)?sh|authorized_keys|chmod [-u+]*[su]*[+ ]*s|useradd|/tmp/[a-zA-Z0-9._-]+\.sh|/dev/tcp/'
 
 { echo "===== [$(date "+%F %T")] cmd_monitor run ====="
-  sudo -n true 2>/dev/null || exec sudo -S bash "$0" < /dev/null
   [ -f "$STATE" ] || echo 0 > "$STATE"
   last=$(cat "$STATE")
   cur=$(stat -c %s $AUDIT_LOG 2>/dev/null || echo 0)
