@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -29,6 +30,12 @@ const (
 	trafficInterval = 60 * time.Second // 低频采样（月度统计无需秒级）
 	connPurgeAge    = 15 * time.Minute // conntrack 连接基准清理阈值
 	trafficRetain   = 400              // 保留最近约 13 个月的天数
+
+	// L2 备选后端（nftables 按端口计数）：用于不支持 /proc/net/nf_conntrack dump 的内核
+	// （如阿里云中转机），在不开 conntrack 记账的前提下按监听端口拿到字节（纯计数器，低开销）。
+	trafNftTable  = "traffic_mon"          // 隔离表，policy accept，仅计数不拦包
+	trafNftListen = "traffic_mon_port_sync" // （保留，未用）
+	trafNftSync   = 5 * time.Minute         // 端口集低频同步（重建表，重置基准）
 )
 
 // PortTraffic 单端口/进程在某日的流量（字节）。
@@ -79,11 +86,15 @@ var (
 	trafNICRX    = map[string]uint64{}      // nic 累计 RX（差分基准）
 	trafNICTX    = map[string]uint64{}      // nic 累计 TX（差分基准）
 	trafConn     = map[string]connBytes{}   // conntrack 连接字节基准
-	trafAcctOK   bool                       // L2 是否真正跑通（读到记账字节）
+	trafAcctOK   bool                       // L2 是否真正跑通（conntrack 或 nft 后端），供前端提示
 	localIPs     = map[string]bool{}
 	localIPT     time.Time
 	listenCache  = map[int]string{} // port -> proc
 	listenCacheT time.Time
+	// nftables 计数后端状态（阿里云等无 conntrack dump 时启用）
+	trafNftSyncedAt time.Time
+	trafNftPorts    []int
+	trafNftBaseline = map[string]uint64{} // counter 名(in_X/out_X) -> 累计字节基准
 )
 
 // loadTraffic 启动时从磁盘载入既有日表。
@@ -163,8 +174,11 @@ func sampleTraffic() {
 		trafNICTX[nic] = v.TXBytes
 	}
 
-	// ---- L2：conntrack 连接字节 → 按本机监听端口/进程归因（可降级） ----
-	sampleConntrackInto(now, d)
+	// ---- L2：按端口/进程归因。优先 conntrack 后端；不可用（无 /proc/net/nf_conntrack
+	// dump，如阿里云）时回退 nftables 计数后端（同样按监听端口）。 ----
+	if !sampleConntrackInto(now, d) {
+		sampleNftInto(now, d)
+	}
 
 	trafficMu.Unlock()
 
@@ -211,15 +225,16 @@ func listenPortProc() map[int]string {
 }
 
 // sampleConntrackInto 批量读 conntrack，把连接字节增量归因到今日 d 的对应端口。
-func sampleConntrackInto(now time.Time, d *DayTraffic) {
+// 返回 true 表示 conntrack 后端本次生效；false 表示不可用（由调用方回退 nft 后端）。
+func sampleConntrackInto(now time.Time, d *DayTraffic) bool {
 	if !conntrackAcctEnabled() {
 		trafAcctOK = false
-		return
+		return false
 	}
 	data, err := os.ReadFile("/proc/net/nf_conntrack")
 	if err != nil {
 		trafAcctOK = false
-		return
+		return false
 	}
 	local := localIPSet()
 	listen := listenPortProc()
@@ -299,6 +314,164 @@ func sampleConntrackInto(now time.Time, d *DayTraffic) {
 		}
 	}
 	trafAcctOK = true
+	return true
+}
+
+// ---- L2 备选后端：nftables 按监听端口字节计数 ----
+// 用于内核不导出 /proc/net/nf_conntrack dump 的主机（如阿里云中转机）。
+// 原理：隔离表 traffic_mon（in/out 两条 base chain，policy accept，只计数不拦包），
+// 每条监听端口各建一个命名计数器（in_P/out_P），tcp+udp 双规则计数。
+// 每采样周期读一次计数器做差分，归入当日端口流量。低频同步端口集（重建表+重置基准）。
+
+// trafficPortOf 取/建今日 d 中指定端口的流量条目（带进程名）。
+func trafficPortOf(d *DayTraffic, port int, listen map[int]string) *PortTraffic {
+	k := strconv.Itoa(port)
+	p := d.Ports[k]
+	if p == nil {
+		proc := ""
+		if listen != nil {
+			proc = listen[port]
+		}
+		p = &PortTraffic{Port: port, Proc: proc}
+		d.Ports[k] = p
+	}
+	return p
+}
+
+// syncNftTable 重建 traffic_mon 隔离表（删除+重建，含当前监听端口的命名计数器）。
+func syncNftTable(ports []int) bool {
+	// 清空旧表（不存在则忽略错误）
+	_ = exec.Command("nft", "delete", "table", "ip", "traffic_mon").Run()
+	var b strings.Builder
+	b.WriteString("add table ip traffic_mon\n")
+	b.WriteString("add chain ip traffic_mon in { type filter hook input priority 0; policy accept; }\n")
+	b.WriteString("add chain ip traffic_mon out { type filter hook output priority 0; policy accept; }\n")
+	for _, p := range ports {
+		ps := strconv.Itoa(p)
+		in := "in_" + ps
+		out := "out_" + ps
+		b.WriteString("add counter ip traffic_mon " + in + "\n")
+		b.WriteString("add rule ip traffic_mon in tcp dport " + ps + " counter name " + in + "\n")
+		b.WriteString("add rule ip traffic_mon in udp dport " + ps + " counter name " + in + "\n")
+		b.WriteString("add counter ip traffic_mon " + out + "\n")
+		b.WriteString("add rule ip traffic_mon out tcp sport " + ps + " counter name " + out + "\n")
+		b.WriteString("add rule ip traffic_mon out udp sport " + ps + " counter name " + out + "\n")
+	}
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(b.String())
+	return cmd.Run() == nil
+}
+
+// readNftCounters 读取 traffic_mon 表命名计数器当前累计字节（name -> bytes）。
+// 找不到 nft 或读取失败返回 nil。
+func readNftCounters() map[string]uint64 {
+	out := runOut(8*time.Second, "nft", "-j", "list", "table", "ip", "traffic_mon")
+	if out == "" {
+		return nil
+	}
+	var parsed struct {
+		Nftables []map[string]interface{} `json:"nftables"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		return nil
+	}
+	res := map[string]uint64{}
+	for _, el := range parsed.Nftables {
+		if el == nil {
+			continue
+		}
+		// 顶层带 bytes/packets 的命名计数器：el["counter"]{name, family, handle, bytes, packets}
+		c, ok := el["counter"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := c["name"].(string)
+		if name == "" {
+			continue
+		}
+		bv, ok := c["bytes"].(float64)
+		if !ok {
+			// 兜底：bytes 也可能在 el 顶层
+			if bv2, ok2 := el["bytes"].(float64); ok2 {
+				bv = bv2
+			} else {
+				continue
+			}
+		}
+		res[name] = uint64(bv)
+	}
+	return res
+}
+
+// sampleNftInto 用 nftables 计数后端把端口字节增量归因到今日 d。
+func sampleNftInto(now time.Time, d *DayTraffic) {
+	if _, err := exec.LookPath("nft"); err != nil {
+		trafAcctOK = false
+		return
+	}
+	listen := listenPortProc()
+	ports := make([]int, 0, len(listen))
+	for p := range listen {
+		ports = append(ports, p)
+	}
+	sort.Ints(ports)
+
+	// 端口集变化或超周期：重建表并重置基准
+	if time.Since(trafNftSyncedAt) > trafNftSync || !samePorts(trafNftPorts, ports) {
+		if !syncNftTable(ports) {
+			trafAcctOK = false
+			return
+		}
+		trafNftPorts = ports
+		trafNftSyncedAt = now
+		trafNftBaseline = map[string]uint64{}
+	}
+
+	cur := readNftCounters()
+	if cur == nil {
+		trafAcctOK = false
+		return
+	}
+	for name, bytes := range cur {
+		sep := strings.LastIndexByte(name, '_')
+		if sep <= 0 || sep == len(name)-1 {
+			continue
+		}
+		dir := name[:sep] // in/out
+		p, err := strconv.Atoi(name[sep+1:])
+		if err != nil {
+			continue
+		}
+		prev, seen := trafNftBaseline[name]
+		trafNftBaseline[name] = bytes
+		if !seen || bytes < prev {
+			continue
+		}
+		delta := bytes - prev
+		if delta == 0 {
+			continue
+		}
+		pt := trafficPortOf(d, p, listen)
+		if dir == "in" {
+			pt.RX += delta
+		} else {
+			pt.TX += delta
+		}
+	}
+	trafAcctOK = true
+}
+
+// samePorts 比较两个端口集是否一致（均已排序）。
+func samePorts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // parseConnLine 解析单行 conntrack 为连接字节快照。字段缺失/无记账字节则返回 false。

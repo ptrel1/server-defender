@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+// TestSamePorts nft 端口集比较。
+func TestSamePorts(t *testing.T) {
+	if !samePorts([]int{22, 443, 8899}, []int{22, 443, 8899}) {
+		t.Fatal("相同端口集应相等")
+	}
+	if samePorts([]int{22, 443}, []int{22, 443, 8899}) {
+		t.Fatal("不同长度应不等")
+	}
+	if samePorts([]int{22, 443}, []int{22, 88}) {
+		t.Fatal("不同内容应不等")
+	}
+}
+
+// TestTrafficPortOf 端口条目取/建与进程名写入。
+func TestTrafficPortOf(t *testing.T) {
+	d := &DayTraffic{Date: "2026-09-07", Ports: map[string]*PortTraffic{}}
+	listen := map[int]string{443: "nginx(9)", 22: "sshd(1)"}
+	p := trafficPortOf(d, 22, listen)
+	if p.Port != 22 || p.Proc != "sshd(1)" {
+		t.Fatalf("新建条目错误: %+v", p)
+	}
+	p.RX += 100
+	p2 := trafficPortOf(d, 22, listen)
+	if p2.RX != 100 {
+		t.Fatalf("应复用既有条目: %+v", p2)
+	}
+}
+
 // TestParseConnLine 验证 conntrack 记账行解析（含 IPv6 地址中的冒号，分割须按 '=' 而非空格）。
 func TestParseConnLine(t *testing.T) {
 	// 会计账开启时的典型行（原始方向：远端 9.9.9.9:5555 → 本机 1.2.3.4:443）

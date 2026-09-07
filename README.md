@@ -11,6 +11,16 @@
 - ✅ **前端内嵌**：HTML/CSS/JS/Chart.js 通过 `//go:embed` 打包进二进制，无外部静态目录
 - ✅ **数据兼容**：`data/*.json` 数据结构与 Python 版一致，迁移不丢历史封禁/事件
 
+## 🚀 v3.6.0 新增（2026-09-07）——月度流量 L2 归因新增 nftables 计数后端（阿里云等无 conntrack dump 的主机）
+
+为解决「内核不导出 `/proc/net/nf_conntrack` dump（如阿里云中转机）→ 无法按端口归因」的缺口，新增 **nftables 计数后端**作为 L2 的第二条数据源，与 conntrack 后端**自动回退切换**：
+
+- **自动回退**：`sampleTraffic` 先尝试 conntrack 后端；不可用（无 dump / 未开记账）时自动切到 nft 后端，前端无需感知。
+- **低负载**：隔离表 `traffic_mon`（in/out 两条 base chain，`policy accept` 纯计数**不拦包**），每秒采样 60s 读一次命名计数器差分；端口集变化或每 5min 低频重建（重置基准）。**全程不开 conntrack 记账**，比 conntrack 后端更省。
+- **归因口径**：按监听端口（tcp+udp 双规则），端口→进程名仍走 `ss -tlnp`；frp 隧道端口会以 `frps` 进程归入，直连端口（ssh/nginx/postsup）同样纳入。
+- **隔离安全**：独立 nft 表，不触碰现有安全/防御规则集；`policy accept` 保证即使规则异常也不影响任何流量。
+- **测试**：nft 脚本与 `nft -j` JSON 解析已本地实测（counter.bytes 取数）；`samePorts`/`trafficPortOf` 单测通过。
+
 ## 🚀 v3.5.0 新增（2026-09-07）——月度流量用量统计（手机式：总用量 + 按端口/应用排行）
 
 网络页新增「📊 **月度流量用量**」卡片，仿手机流量统计的心智模型：**本月总量 → 按端口/应用消耗排行**，支持月份切换回溯历史。
