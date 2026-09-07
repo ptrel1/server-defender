@@ -11,6 +11,14 @@
 - ✅ **前端内嵌**：HTML/CSS/JS/Chart.js 通过 `//go:embed` 打包进二进制，无外部静态目录
 - ✅ **数据兼容**：`data/*.json` 数据结构与 Python 版一致，迁移不丢历史封禁/事件
 
+## 🚀 v3.4.0 优化（2026-09-07）——WebMon 实例今日请求数去写死
+
+WebMon「访问」页里两张实例卡（dsh 主实例 / dsh2 救援实例）原先**固定主实例在前**；现改为按「今日请求数降序」动态展示——**谁今天访问多，谁排前面**。趋势图 dataset 顺序与卡片一致，不再对单一域名写死填充高亮。
+
+- **后端** `webmon.go`：移除固定 `webmonDomainOrder` 排序，新增 `webmonDomainStats()` 按今日请求数降序计算域名顺序，`/api/webmon` 新增 `domain_stats` 字段（`domain/count/color/title`），趋势图 dataset 与该顺序保持一致。
+- **前端** `index.html`：删除写死的两张实例卡与 `stat-web-d1/d2` 更新逻辑，改为 `renderWebDomainCards()` 按后端返回的 `domain_stats` 动态渲染；趋势图填充由「固定 dsh 主实例」改为「最高访问那条（i===0）填充」。
+- **新增域名**：未来在 `webmonLogs`/兜底列表里加域名即自动并入卡片与趋势图，副标题缺省「今日请求数」，颜色按扩展色板自动补齐。
+
 ## 🚀 v3.3.1 修复（2026-09-04）——Reaper 误杀治理
 
 排查发现 Reaper 会把「运行久 + 高 CPU 的长任务」误杀（实例：一个正常 `grep` 全盘扫描被 Reaper 当失控进程收割）。改进判定，降低误杀：

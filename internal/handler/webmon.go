@@ -12,20 +12,30 @@ import (
 // 本文件：域名访问监控 (WebMon) 的数据组装与 HTML 片段渲染。
 // 数据从 service.GetWebMonSnapshot 获取；趋势折线在前端用 Chart.js 绘制。
 
-// webmonDomainOrder 折线图 dataset 顺序（dsh 主实例在前）。
-var webmonDomainOrder = []string{"dsh.ptrel.cc.cd", "dsh2.ptrel.cc.cd"}
-
 // webmonDomainColors 折线配色（与面板 Apple 风格色板一致）。
 var webmonDomainColors = map[string]string{
 	"dsh.ptrel.cc.cd":  "#0a84ff",
 	"dsh2.ptrel.cc.cd": "#30d158",
 }
 
+// webmonDomainTitle 域名 → 实例角色副标题。新增监控域名缺省用「今日请求数」。
+var webmonDomainTitle = map[string]string{
+	"dsh.ptrel.cc.cd":  "主实例今日请求数",
+	"dsh2.ptrel.cc.cd": "救援实例今日请求数",
+}
+
+// webmonFallbackOrder 兜底显示顺序：仅当无任何桶/今日数据时用于防空白页，
+// 不再作为展示顺序依据——展示顺序一律按「今日请求数降序」动态计算（不写死）。
+var webmonFallbackOrder = []string{"dsh.ptrel.cc.cd", "dsh2.ptrel.cc.cd"}
+
 // WebMonData 组装 /api/webmon 返回数据。
 func WebMonData() map[string]interface{} {
 	snap := service.GetWebMonSnapshot()
 
-	// ---- 趋势折线：合并各域名的桶时间轴，保证两条线 x 轴对齐 ----
+	// ---- 按「今日请求数降序」动态决定域名展示顺序（替代硬编码 dsh→dsh2 固定次序）----
+	domainStats := webmonDomainStats(&snap)
+
+	// ---- 趋势折线：合并各域名的桶时间轴，保证各条线 x 轴对齐 ----
 	tsSet := map[int64]bool{}
 	for _, bs := range snap.Buckets {
 		for _, b := range bs {
@@ -44,8 +54,10 @@ func WebMonData() map[string]interface{} {
 	for _, ts := range tsList {
 		labels = append(labels, time.Unix(ts, 0).Format("01-02 15:04"))
 	}
-	datasets := make([]map[string]interface{}, 0, len(webmonDomainOrder))
-	for _, domain := range webmonDomainOrder {
+	// dataset 顺序与卡片一致：均来自 webmonDomainStats（今日请求数降序）。
+	datasets := make([]map[string]interface{}, 0, len(domainStats))
+	for _, ds := range domainStats {
+		domain := ds["domain"].(string)
 		idx := map[int64]int64{}
 		for _, b := range snap.Buckets[domain] {
 			idx[b.Ts] = b.Count
@@ -55,7 +67,7 @@ func WebMonData() map[string]interface{} {
 			counts = append(counts, idx[ts])
 		}
 		datasets = append(datasets, map[string]interface{}{
-			"label": domain, "data": counts, "color": webmonDomainColors[domain],
+			"label": domain, "data": counts, "color": ds["color"],
 		})
 	}
 
@@ -65,6 +77,7 @@ func WebMonData() map[string]interface{} {
 		"total_requests": snap.TotalRequests,
 		"total_ips":      snap.TotalIPs,
 		"per_domain":     snap.DomainToday,
+		"domain_stats":   domainStats,
 		"trend_labels":   labels,
 		"trend_datasets": datasets,
 		"top_ips_html":   RenderWebMonTopIPsHTML(snap.TopIPs),
@@ -73,6 +86,60 @@ func WebMonData() map[string]interface{} {
 		"alerts_count":   len(service.LoadWebAlerts()),
 		"time":           time.Now().Format("2006-01-02 15:04:05"),
 	}
+}
+
+// webmonDomainStats 计算按「今日请求数降序」的域名统计，供实例卡片与趋势图共用同一顺序。
+// 域名全集 = 24h 趋势桶 + 今日有流量 + 兜底列表；保证低流量日实例仍可见（今日次数为 0）。
+// 边界/风险：平列次数时按域名稳定排序，避免每次轮询刷新顺序抖动。
+func webmonDomainStats(snap *service.WebMonSnapshot) []map[string]interface{} {
+	seen := map[string]bool{}
+	order := make([]string, 0, len(snap.Buckets)+len(snap.DomainToday)+len(webmonFallbackOrder))
+	add := func(d string) {
+		if !seen[d] {
+			seen[d] = true
+			order = append(order, d)
+		}
+	}
+	for d := range snap.Buckets {
+		add(d)
+	}
+	for d := range snap.DomainToday {
+		add(d)
+	}
+	for _, d := range webmonFallbackOrder {
+		add(d)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		ci, cj := snap.DomainToday[order[i]], snap.DomainToday[order[j]]
+		if ci != cj {
+			return ci > cj // 今日请求数降序 = 最高访问在前
+		}
+		return order[i] < order[j]
+	})
+	out := make([]map[string]interface{}, 0, len(order))
+	for i, d := range order {
+		c, _ := webmonDomainColors[d]
+		if c == "" {
+			c = webmonDefaultColor(i)
+		}
+		t, _ := webmonDomainTitle[d]
+		if t == "" {
+			t = "今日请求数"
+		}
+		out = append(out, map[string]interface{}{
+			"domain": d,
+			"count":  snap.DomainToday[d],
+			"color":  c,
+			"title":  t,
+		})
+	}
+	return out
+}
+
+// webmonDefaultColor 超出固定配色的新增域名按序取扩展色（Apple 风格拓展色板）。
+func webmonDefaultColor(i int) string {
+	palette := []string{"#bf5af2", "#ff9f0a", "#ff375f", "#64d2ff", "#ffd60a", "#ac8e68"}
+	return palette[i%len(palette)]
 }
 
 // RenderWebMonTopIPsHTML 渲染访问来源 TOP IP 表（含归属地，异常 IP 标红）。
