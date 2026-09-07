@@ -268,23 +268,25 @@ func sampleConntrackInto(now time.Time, d *DayTraffic) {
 		}
 
 		if prev, ok := trafConn[k]; ok {
-			// 增量归因（计数器只增不减，回绕/重置则跳过该方向）
+			// 增量归因（计数器只增不减；回绕/重置则跳过；无实际增量不建端口条目，避免 0 字节噪音）
 			if cb.first >= prev.first {
-				delta := cb.first - prev.first
-				p := portOf(lp)
-				if isInbound {
-					p.RX += delta
-				} else {
-					p.TX += delta
+				if delta := cb.first - prev.first; delta > 0 {
+					p := portOf(lp)
+					if isInbound {
+						p.RX += delta
+					} else {
+						p.TX += delta
+					}
 				}
 			}
 			if cb.second >= prev.second {
-				delta := cb.second - prev.second
-				p := portOf(lp)
-				if isInbound {
-					p.TX += delta
-				} else {
-					p.RX += delta
+				if delta := cb.second - prev.second; delta > 0 {
+					p := portOf(lp)
+					if isInbound {
+						p.TX += delta
+					} else {
+						p.RX += delta
+					}
 				}
 			}
 		}
