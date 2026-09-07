@@ -1,6 +1,7 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.4.0)
-// v3.4.0: WebMon 去写死——实例今日请求数卡片与趋势图不再固定主实例在前，
-//         改为按「今日请求数降序」动态展示（最高访问在前），新增域名自动并入。
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.5.0)
+// v3.5.0: 月度流量用量统计——L1 网卡月总量(/proc/net/dev 差分,零开销) + L2 按端口/进程
+//         归因(conntrack 记账,可降级)。网络页新卡片「📊 月度流量用量」,懒加载 /api/traffic。
+// v3.4.0: WebMon 实例今日请求数去写死,按今日请求数降序动态展示。
 // v3.3.1: Reaper 误杀治理——CPU 持续采样确认 + grep/find 遍历参数豁免 + 文案分钟数修正。
 // v3.3.0: 执行来源追溯(ProcTrace)——基于 auditd execve 审计，对可疑进程回查父链，
 //         回答"命令从哪个入口/谁触发进来的"(PAM/SSH/cron/su/systemd 触发判定)。
@@ -51,6 +52,8 @@ func main() {
 	go service.WebMonLoop(done)
 	// frps-ssh：每日识别 frp SSH 隧道端口并同步 frps-ssh 防御（banner 探测 + 端口有效性判定）
 	go service.FrpsSSHLoop(done)
+	// traffic：月度流量用量统计（L1 网卡月总量 + L2 按端口/进程归因，低负载 60s 采样）——v3.5.0 新增
+	go service.TrafficLoop(done)
 	// frps-attack：实时 tail frps.log 记录 SSH 攻击命中隧道（目标端口归因，供事件流/TOP IP 展示）
 	go service.FrpsAttackLoop(done)
 	// procguard：进程级安全——userland 伪装内核线程 + setuid-root 掉包检测（v3.2.0 新增）
@@ -164,6 +167,9 @@ func main() {
 
 	// 执行来源追溯（auditd exec 父链回查）——v3.3.0 新增
 	mux.HandleFunc("/api/proctrace", handler.ProcTraceDataHandler)
+
+	// 月度流量用量统计（懒加载：进入网络页/切换月份时调用）——v3.5.0 新增
+	mux.HandleFunc("/api/traffic", handler.HandleTraffic)
 
 	// 前端日志上报（浏览器 JS 异常 / 环境快照，排查本地渲染问题）
 	mux.HandleFunc("/api/client_log", handler.PostClientLog)

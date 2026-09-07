@@ -119,6 +119,13 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 .nic-row { display:flex; justify-content:space-between; align-items:center; padding:8px 4px; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px; }
 .nic-virtual { opacity:0.55; font-size:12px; }
 .toggle-btn { padding:4px 10px; border-radius:6px; font-size:11px; background:rgba(255,255,255,0.08); color:var(--text-secondary); border:1px solid rgba(255,255,255,0.1); cursor:pointer; }
+/* 月度流量用量（手机式流量卡片：总用量 → 按端口/应用排行） */
+.traffic-select { padding:5px 10px; border-radius:8px; font-size:12.5px; background:rgba(255,255,255,0.06); color:var(--text-primary); border:1px solid rgba(255,255,255,0.12); cursor:pointer; }
+.traffic-select:focus { outline:none; border-color:var(--apple-blue); }
+.traffic-bar-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
+.traffic-bar-row:last-child { border-bottom:none; }
+.traffic-bar-track { flex:1; height:6px; border-radius:6px; background:rgba(255,255,255,0.07); overflow:hidden; }
+.traffic-bar-fill { height:100%; border-radius:6px; background:linear-gradient(90deg,var(--apple-blue),#5ac8fa); }
 /* ===== Tab 分页导航（渐进披露，按任务场景分组）===== */
 .tab-nav { display:flex; gap:6px; margin-bottom:20px; background:var(--panel-bg); backdrop-filter:blur(24px); border:1px solid var(--panel-border); border-radius:14px; padding:6px; width:fit-content; }
 .tab-btn { display:inline-flex; align-items:center; gap:7px; padding:9px 20px; border-radius:10px; font-size:13.5px; font-weight:600; color:var(--text-secondary); cursor:pointer; border:none; background:transparent; transition:all 0.22s cubic-bezier(0.16,1,0.3,1); }
@@ -291,6 +298,22 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 
 <!-- ============ Tab: 网络 ============ -->
 <section class="tab-page" id="page-network">
+<!-- 月度流量用量（手机式流量统计：总用量→按端口/应用排行；懒加载，低负载）v3.5.0 -->
+<div class="glass-card" style="margin-bottom:20px;">
+  <div class="card-header">
+    <div class="card-title">📊 月度流量用量</div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="traffic-note" style="font-size:11px;color:var(--apple-orange);"></span>
+      <select id="traffic-month" class="traffic-select" onchange="renderTraffic()"></select>
+    </div>
+  </div>
+  <div style="display:flex;gap:36px;flex-wrap:wrap;margin-bottom:18px;">
+    <div><div class="metric-label">本月总流量（入站）</div><div class="net-value" id="traffic-rx">—</div></div>
+    <div><div class="metric-label">上行（出站）</div><div class="net-value" id="traffic-tx">—</div></div>
+  </div>
+  <div class="card-title2" style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">按端口 / 应用消耗 TOP（字节）</div>
+  <div id="traffic-ports"><div class="empty-state"><div class="empty-icon">⌛</div><span>加载中...</span></div></div>
+</div>
 <main class="main-workspace">
   <div class="column">
     <div class="glass-card">
@@ -475,6 +498,65 @@ function fmtRate(bps) {
   return bps.toFixed(0) + ' B/s';
 }
 
+// ===== 月度流量用量（懒加载，进入网络页时拉一次；低负载，不入 4s 轮询）=====
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  const u = ['B','KB','MB','GB','TB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + u[i];
+}
+let trafficCache = { months: [], acct: false, note: '' };
+let trafficLoaded = false;
+async function loadTraffic() {
+  try {
+    const res = await fetch('/api/traffic');
+    const data = (await res.json()) || {};
+    trafficCache = data;
+    trafficLoaded = true;
+    const sel = document.getElementById('traffic-month');
+    const prev = sel.value;
+    sel.innerHTML = '';
+    (data.months || []).forEach(function(m) {
+      const o = document.createElement('option');
+      o.value = m.month; o.textContent = m.month;
+      sel.appendChild(o);
+    });
+    if (prev && (data.months || []).some(function(m){ return m.month === prev; })) sel.value = prev;
+    renderTraffic();
+  } catch(e) { console.error('traffic fetch error', e); }
+}
+function renderTraffic() {
+  const sel = document.getElementById('traffic-month');
+  const el = document.getElementById('traffic-ports');
+  const months = trafficCache.months || [];
+  const m = months.find(function(x){ return x.month === sel.value; }) || months[0];
+  // 降级提示：L2 未跑通时仅展示网卡总量（低负载分级）
+  document.getElementById('traffic-note').textContent = trafficCache.acct ? '' : (trafficCache.note || '');
+  if (!m) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">📊</div><span>暂无流量数据，将在数分钟后产生首个样本</span></div>';
+    return;
+  }
+  document.getElementById('traffic-rx').textContent = fmtBytes(m.rx);
+  document.getElementById('traffic-tx').textContent = fmtBytes(m.tx);
+  const ports = (m.ports || []).slice(0, 8);
+  if (!ports.length) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">🔌</div><span>本月暂无端口明细' +
+      (trafficCache.acct ? '' : '（未开启 conntrack 记账，仅展示网卡总量）') + '</span></div>';
+    return;
+  }
+  let max = 1;
+  ports.forEach(function(p){ max = Math.max(max, p.rx + p.tx); });
+  el.innerHTML = ports.map(function(p, i) {
+    const pct = Math.max(3, Math.round((p.rx + p.tx) / max * 100));
+    const label = p.proc ? p.proc + ' · 端口 ' + p.port : '端口 ' + p.port;
+    return '<div class="traffic-bar-row"><span style="width:10px;color:var(--text-muted);font-size:12px">' + (i + 1) + '</span>' +
+      '<span style="min-width:170px;color:var(--text-primary);font-size:12.5px">' + label + '</span>' +
+      '<div class="traffic-bar-track"><div class="traffic-bar-fill" style="width:' + pct + '%"></div></div>' +
+      '<span style="width:175px;text-align:right;font-family:\'JetBrains Mono\',monospace;font-size:12px;color:var(--text-secondary)">↓ ' + fmtBytes(p.rx) + ' ↑ ' + fmtBytes(p.tx) + '</span></div>';
+  }).join('');
+}
+
 async function fetchData() {
   try {
     const v = showVirtual ? '1' : '0';
@@ -580,6 +662,8 @@ function switchTab(name) {
   if (name === 'overview' && historyChart1) historyChart1.resize();
   if ((name === 'host' || name === 'overview') && historyChart2) historyChart2.resize();
   if (name === 'webmon' && chartStore.w) chartStore.w.resize();
+  // 网络页懒加载月度流量用量（仅首次进入拉取，低负载）
+  if (name === 'network' && !trafficLoaded) loadTraffic();
 }
 
 function renderChart(history) {
