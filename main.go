@@ -197,7 +197,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v3.1.0 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v3.5.0 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)
