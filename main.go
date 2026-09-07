@@ -1,4 +1,5 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.5.0)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.5.1)
+// v3.5.1: 月度流量端口明细去 0 字节噪音——仅实际增量>0 才建端口条目，精简 JSON。
 // v3.5.0: 月度流量用量统计——L1 网卡月总量(/proc/net/dev 差分,零开销) + L2 按端口/进程
 //         归因(conntrack 记账,可降级)。网络页新卡片「📊 月度流量用量」,懒加载 /api/traffic。
 // v3.4.0: WebMon 实例今日请求数去写死,按今日请求数降序动态展示。
@@ -197,7 +198,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v3.5.0 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v3.5.1 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)
