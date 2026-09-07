@@ -304,7 +304,7 @@ tr:hover td { background:rgba(255,255,255,0.03); }
     <div class="card-title">📊 月度流量用量</div>
     <div style="display:flex;align-items:center;gap:10px;">
       <span id="traffic-note" style="font-size:11px;color:var(--apple-orange);"></span>
-      <select id="traffic-month" class="traffic-select" onchange="renderTraffic()"></select>
+      <select id="traffic-month" class="traffic-select" onchange="loadTraffic()"></select>
     </div>
   </div>
   <div style="display:flex;gap:36px;flex-wrap:wrap;margin-bottom:18px;">
@@ -313,6 +313,20 @@ tr:hover td { background:rgba(255,255,255,0.03); }
   </div>
   <div class="card-title2" style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">按端口 / 应用消耗 TOP（字节）</div>
   <div id="traffic-ports"><div class="empty-state"><div class="empty-icon">⌛</div><span>加载中...</span></div></div>
+  <div class="card-title2" style="font-size:12px;color:var(--text-muted);margin:14px 0 8px;">趋势（天 / 小时粒度）</div>
+  <div style="display:flex;gap:20px;flex-wrap:wrap;">
+    <div style="flex:1;min-width:280px;">
+      <div class="card-title2" style="font-size:11.5px;color:var(--text-muted);margin-bottom:6px;">按天（所选月）</div>
+      <div class="chart-wrap" style="height:150px;"><canvas id="trafficDaysChart"></canvas></div>
+    </div>
+    <div style="flex:1;min-width:280px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <div class="card-title2" style="font-size:11.5px;color:var(--text-muted);">按小时</div>
+        <select id="traffic-day" class="traffic-select" style="padding:2px 8px;font-size:11px;" onchange="loadTraffic()"></select>
+      </div>
+      <div class="chart-wrap" style="height:150px;"><canvas id="trafficHoursChart"></canvas></div>
+    </div>
+  </div>
 </div>
 <main class="main-workspace">
   <div class="column">
@@ -506,31 +520,68 @@ function fmtBytes(n) {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return (i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + u[i];
 }
-let trafficCache = { months: [], acct: false, note: '' };
+let trafficCache = { months: [], acct: false, note: '', days: [], hours: [], ports: [] };
 let trafficLoaded = false;
+let trafficDayChart = null, trafficHourChart = null;
 async function loadTraffic() {
   try {
-    const res = await fetch('/api/traffic');
+    const m = document.getElementById('traffic-month').value || '';
+    const d = document.getElementById('traffic-day').value || '';
+    const res = await fetch('/api/traffic?month=' + encodeURIComponent(m) + '&day=' + encodeURIComponent(d));
     const data = (await res.json()) || {};
     trafficCache = data;
     trafficLoaded = true;
+    // 月选择器
     const sel = document.getElementById('traffic-month');
-    const prev = sel.value;
+    const prev = sel.value || data.month || '';
     sel.innerHTML = '';
-    (data.months || []).forEach(function(m) {
+    (data.months || []).forEach(function(x) {
       const o = document.createElement('option');
-      o.value = m.month; o.textContent = m.month;
+      o.value = x.month; o.textContent = x.month;
       sel.appendChild(o);
     });
-    if (prev && (data.months || []).some(function(m){ return m.month === prev; })) sel.value = prev;
+    if (prev && (data.months || []).some(function(x){ return x.month === prev; })) sel.value = prev;
+    // 日选择器（所选月有数据的天 + 今天兜底）
+    const dsel = document.getElementById('traffic-day');
+    const dprev = dsel.value || data.day || '';
+    dsel.innerHTML = '';
+    const dayList = (data.days || []).map(function(x){ return x.date; });
+    if (dayList.indexOf(data.day) === -1) dayList.push(data.day);
+    dayList.sort().reverse().forEach(function(dt) {
+      const o = document.createElement('option');
+      o.value = dt; o.textContent = dt;
+      dsel.appendChild(o);
+    });
+    if (dprev && dayList.indexOf(dprev) !== -1) dsel.value = dprev;
     renderTraffic();
   } catch(e) { console.error('traffic fetch error', e); }
 }
+// 柱状图单位自适应（B/KB/MB/GB），返回除数与单位名
+function trafficUnit(vals) {
+  let max = 1;
+  vals.forEach(function(v){ max = Math.max(max, Number(v)||0); });
+  const u = ['B','KB','MB','GB'];
+  let i = 0, div = 1;
+  while (max / div >= 1024 && i < u.length - 1) { div *= 1024; i++; }
+  return { div: div, unit: u[i] };
+}
+function renderTrafficBar(canvasId, existing, labels, rx, tx) {
+  if (existing) existing.destroy();
+  const cu = trafficUnit(rx.concat(tx));
+  const opts = { responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{ display:true, labels:{ boxWidth:10, font:{size:10} } } },
+    scales:{ x:{ ticks:{ font:{size:9}, maxRotation:0, autoSkip:true }, grid:{display:false} },
+             y:{ beginAtZero:true, ticks:{ font:{size:9}, callback:function(v){ return v + ' ' + cu.unit; } } } } };
+  return new Chart(document.getElementById(canvasId), { type:'bar',
+    data:{ labels: labels, datasets:[
+      { label:'入站', data: rx.map(function(v){ return +(v/cu.div).toFixed(1); }), backgroundColor:'rgba(10,132,255,0.75)', borderRadius:3 },
+      { label:'出站', data: tx.map(function(v){ return +(v/cu.div).toFixed(1); }), backgroundColor:'rgba(255,159,10,0.75)', borderRadius:3 }
+    ]}, options: opts });
+}
 function renderTraffic() {
-  const sel = document.getElementById('traffic-month');
   const el = document.getElementById('traffic-ports');
   const months = trafficCache.months || [];
-  const m = months.find(function(x){ return x.month === sel.value; }) || months[0];
+  const m = months.find(function(x){ return x.month === trafficCache.month; }) || months[0];
   // 降级提示：L2 未跑通时仅展示网卡总量（低负载分级）
   document.getElementById('traffic-note').textContent = trafficCache.acct ? '' : (trafficCache.note || '');
   if (!m) {
@@ -539,10 +590,24 @@ function renderTraffic() {
   }
   document.getElementById('traffic-rx').textContent = fmtBytes(m.rx);
   document.getElementById('traffic-tx').textContent = fmtBytes(m.tx);
-  const ports = (m.ports || []).slice(0, 8);
+  // 天 / 小时柱状图
+  const days = trafficCache.days || [];
+  if (days.length) {
+    trafficDayChart = renderTrafficBar('trafficDaysChart', trafficDayChart,
+      days.map(function(x){ return x.date.slice(5); }),
+      days.map(function(x){ return x.rx; }), days.map(function(x){ return x.tx; }));
+  }
+  const hours = trafficCache.hours || [];
+  if (hours.length) {
+    trafficHourChart = renderTrafficBar('trafficHoursChart', trafficHourChart,
+      hours.map(function(x){ return x.hour + '时'; }),
+      hours.map(function(x){ return x.rx; }), hours.map(function(x){ return x.tx; }));
+  }
+  // 端口 TOP
+  const ports = (trafficCache.ports || []).slice(0, 8);
   if (!ports.length) {
     el.innerHTML = '<div class="empty-state"><div class="empty-icon">🔌</div><span>本月暂无端口明细' +
-      (trafficCache.acct ? '' : '（未开启 conntrack 记账，仅展示网卡总量）') + '</span></div>';
+      (trafficCache.acct ? '' : '（无可用归因后端，仅展示网卡总量）') + '</span></div>';
     return;
   }
   let max = 1;

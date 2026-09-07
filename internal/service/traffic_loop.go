@@ -30,6 +30,7 @@ const (
 	trafficInterval = 60 * time.Second // 低频采样（月度统计无需秒级）
 	connPurgeAge    = 15 * time.Minute // conntrack 连接基准清理阈值
 	trafficRetain   = 400              // 保留最近约 13 个月的天数
+	trafficHourKeep = 14               // 小时桶仅保留最近 14 天（更早的天裁剪，控 JSON 体积）
 
 	// L2 备选后端（nftables 按端口计数）：用于不支持 /proc/net/nf_conntrack dump 的内核
 	// （如阿里云中转机），在不开 conntrack 记账的前提下按监听端口拿到字节（纯计数器，低开销）。
@@ -47,11 +48,32 @@ type PortTraffic struct {
 }
 
 // DayTraffic 单日流量汇总。
+// Hours：小时粒度桶（key="0".."23"），仅为最近 trafficHourKeep 天保留（更早裁剪，控体积）。
 type DayTraffic struct {
 	Date  string                  `json:"date"`
 	RX    uint64                  `json:"rx"`
 	TX    uint64                  `json:"tx"`
 	Ports map[string]*PortTraffic `json:"ports,omitempty"` // key=strconv(port)
+	Hours map[string]*HourTraffic `json:"hours,omitempty"`
+}
+
+// HourTraffic 单小时入/出字节。
+type HourTraffic struct {
+	RX uint64 `json:"rx"`
+	TX uint64 `json:"tx"`
+}
+
+// DayPoint / HourPoint：API 序列化用的天/小时粒度点。
+type DayPoint struct {
+	Date string `json:"date"`
+	RX   uint64 `json:"rx"`
+	TX   uint64 `json:"tx"`
+}
+
+type HourPoint struct {
+	Hour int    `json:"hour"`
+	RX   uint64 `json:"rx"`
+	TX   uint64 `json:"tx"`
 }
 
 // MonthTraffic 月度聚合（服务层内部结构）。
@@ -61,6 +83,30 @@ type MonthTraffic struct {
 	TX        uint64
 	Ports     map[int]*PortTraffic
 	PortsList []*PortTraffic // 按总量降序的端口明细（供 handler 直接序列化）
+	Days      []DayPoint     // 天粒度明细（日期升序，供前端按天柱状图）
+}
+
+// TrafficDayHours 返回指定日期的小时粒度（0..23 固定 24 槽，缺数据为 0）。
+// 超过 trafficHourKeep 天的历史无小时数据（已裁剪），返回空槽。
+func TrafficDayHours(date string) []HourPoint {
+	trafficMu.Lock()
+	d := trafDays[date]
+	hours := make([]HourPoint, 24)
+	for i := range hours {
+		hours[i].Hour = i
+	}
+	if d != nil {
+		for k, h := range d.Hours {
+			hn, err := strconv.Atoi(k)
+			if err != nil || hn < 0 || hn > 23 {
+				continue
+			}
+			hours[hn].RX = h.RX
+			hours[hn].TX = h.TX
+		}
+	}
+	trafficMu.Unlock()
+	return hours
 }
 
 // connBytes conntrack 单连接字节快照（最佳努力）。first=原始方向字节，second=应答方向字节。
@@ -156,22 +202,39 @@ func sampleTraffic() {
 
 	// ---- L1：网卡累计字节差分（/proc/net/dev，零子进程、零内核依赖） ----
 	curNIC := readProcNetDev()
+	var dRX, dTX uint64
 	for nic, v := range curNIC {
 		if !v.Physical {
 			continue
 		}
 		if prevRX, ok := trafNICRX[nic]; ok {
 			if v.RXBytes >= prevRX {
-				d.RX += v.RXBytes - prevRX
+				dRX += v.RXBytes - prevRX
 			}
 		}
 		if prevTX, ok := trafNICTX[nic]; ok {
 			if v.TXBytes >= prevTX {
-				d.TX += v.TXBytes - prevTX
+				dTX += v.TXBytes - prevTX
 			}
 		}
 		trafNICRX[nic] = v.RXBytes
 		trafNICTX[nic] = v.TXBytes
+	}
+	d.RX += dRX
+	d.TX += dTX
+	// 小时粒度（低负载：复用同一次差分，只是多落到当天的小时桶）
+	if dRX > 0 || dTX > 0 {
+		hk := strconv.Itoa(now.Hour())
+		if d.Hours == nil {
+			d.Hours = map[string]*HourTraffic{}
+		}
+		h := d.Hours[hk]
+		if h == nil {
+			h = &HourTraffic{}
+			d.Hours[hk] = h
+		}
+		h.RX += dRX
+		h.TX += dTX
 	}
 
 	// ---- L2：按端口/进程归因。优先 conntrack 后端；不可用（无 /proc/net/nf_conntrack
@@ -531,6 +594,12 @@ func persistTraffic() {
 		}
 		trafDays = trimmed
 	}
+	// 小时桶裁剪：最近 trafficHourKeep 天以内才保留 Hours，更早的天释放（低负载控体积）
+	if len(days) > trafficHourKeep {
+		for _, d := range days[:len(days)-trafficHourKeep] {
+			d.Hours = nil
+		}
+	}
 	trafficMu.Unlock()
 
 	b, err := json.Marshal(days)
@@ -567,6 +636,8 @@ func TrafficMonths() []*MonthTraffic {
 		d := trafDays[date]
 		mt.RX += d.RX
 		mt.TX += d.TX
+		// 天粒度明细（供前端按天柱状图）
+		mt.Days = append(mt.Days, DayPoint{Date: d.Date, RX: d.RX, TX: d.TX})
 		for _, p := range d.Ports {
 			mp := mt.Ports[p.Port]
 			if mp == nil {

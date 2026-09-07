@@ -1,4 +1,6 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.6.0)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.7.0)
+// v3.7.0: 月度流量用量新增天/小时粒度——卡片内「按天(所选月)/按小时(所选日)」柱状图；
+//         小时桶仅保留最近14天(低负载控体积)；/api/traffic 支持 month/day 参数。
 // v3.6.0: 月度流量 L2 归因新增 nftables 计数后端——对不导出 /proc/net/nf_conntrack dump 的
 //         内核(如阿里云中转机),用隔离表 traffic_mon(仅计数不拦包)按监听端口拿字节归因,
 //         自动回退:conntrack 后端不可用即切 nft,无需开 conntrack 记账,保持低负载。
@@ -201,7 +203,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v3.6.0 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v3.7.0 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)
