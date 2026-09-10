@@ -47,11 +47,12 @@ const (
 	outboundMaxRecords = 100
 )
 
-// 默认监控文件（相对 $HOME 展开）；可用 data/config.json 的 sentinel_files 覆盖（暂未开放）。
+// 默认监控文件（绝对路径；服务以 root 运行，os.UserHomeDir=/root 会落空，
+// dsh 配置实际在 /home/a1/.dsh，20260910 部署首轮回归修正）。
 var sentinelDefaultFiles = []string{
-	".dsh/settings.yaml",
-	".dsh/.credentials.yaml",
-	".dsh/AGENTS.md",
+	"/home/a1/.dsh/settings.yaml",
+	"/home/a1/.dsh/.credentials.yaml",
+	"/home/a1/.dsh/AGENTS.md",
 }
 
 // 出站哨兵放行端口：常见明文/基础设施端口，出现不代表异常。
@@ -62,6 +63,7 @@ var outboundAllowPorts = map[int]bool{
 	5011: true, 5244: true, 7500: true, 8080: true, 8443: true, 8899: true,
 	9000: true, 9999: false, // 9999 曾是 dsh2shell C2 端口 → 显式不放行
 	40022: true, 50022: true, 50122: true, 53012: true, 53080: true, 53103: true,
+	7001: true, // frps bindPort（本机 frpc → 中转机长连接，20260910 首轮误报修正）
 }
 
 // 历史 C2 端口（20260831/0910 dsh2shell 战役实锤），命中直接告警。
@@ -267,9 +269,8 @@ func ConfigSentinelLoop(done <-chan struct{}) {
 func runSentinelOnce() {
 	sentinelMu.Lock()
 	defer sentinelMu.Unlock()
-	home, _ := os.UserHomeDir()
 	for _, rel := range sentinelDefaultFiles {
-		if rec := scanSentinelFile(filepath.Join(home, rel)); rec != nil {
+		if rec := scanSentinelFile(rel); rec != nil {
 			// 自动封禁：canary/provider 命中且提取到 C2 IP
 			if rec.IP != "" && (containsStr(rec.Rules, "canary-dsh2shell") || containsStr(rec.Rules, "provider-raw-ip")) {
 				if !containsStr(sentinel.BannedIPs, rec.IP) {
