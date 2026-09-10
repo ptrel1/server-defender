@@ -21,4 +21,4 @@ app.toml.bak
 # ---- 测试/临时（项目约定目录）----
 test/
 update_package/
-dev/
+dev/logs/
