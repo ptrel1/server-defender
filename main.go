@@ -1,6 +1,8 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.7.0)
-// v3.7.0: 月度流量用量新增天/小时粒度——卡片内「按天(所选月)/按小时(所选日)」柱状图；
-//         小时桶仅保留最近14天(低负载控体积)；/api/traffic 支持 month/day 参数。
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.8.0)
+// v3.8.0: 配置哨兵+出站哨兵——5min 轮询 ~/.dsh 关键配置(settings/credentials/AGENTS.md)，
+//         哈希 diff+规则扫描抓 dsh2shell 类注入(canary/provider裸IP C2/可疑key/审批never)，
+//         命中即自动双向封禁 C2(复用 BlockIP+中转机同步)；另扫描 ESTABLISHED 出站，
+//         公网非白名单端口(≥3连接或命中历史C2端口)告警。状态持久化 data/config_sentinel.json。
 // v3.6.0: 月度流量 L2 归因新增 nftables 计数后端——对不导出 /proc/net/nf_conntrack dump 的
 //         内核(如阿里云中转机),用隔离表 traffic_mon(仅计数不拦包)按监听端口拿字节归因,
 //         自动回退:conntrack 后端不可用即切 nft,无需开 conntrack 记账,保持低负载。
@@ -74,6 +76,10 @@ func main() {
 	// proctrace：执行来源追溯——基于 auditd execve 审计，对可疑进程回查父链/触发环节（v3.3.0 新增）
 	service.LoadProcTrace()
 	go service.ProcTraceLoop(done)
+	// configsentinel：配置哨兵+出站哨兵——抓 dsh2shell 类配置注入与 C2 出站，5min 一轮（v3.8.0 新增）。
+	// BanHook 注入 handler.BlockIP（本机双向+中转机同步），规避 service→handler 依赖环。
+	service.BanHook = handler.BlockIP
+	go service.ConfigSentinelLoop(done)
 
 	// 解析静态资源
 	sub, err := fs.Sub(staticFS, "internal/static")
@@ -203,7 +209,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v3.7.0 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v3.8.0 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)

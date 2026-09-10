@@ -79,6 +79,10 @@ func DashboardData(includeVirtual bool) map[string]interface{} {
 		"frps_html":        RenderFrpsHTML(),
 		// frp SSH 隧道自动识别（每日探测）
 		"frps_ssh_html":    RenderFrpsSSHHTML(),
+		// 配置哨兵+出站哨兵（v3.8.0）
+		"sentinel_html":  RenderSentinelHTML(),
+		"outbound_html":  RenderOutboundHTML(),
+		"sentinel_count": len(service.SentinelSnapshotView().Records),
 		"frps_ssh_ports_html": RenderFrpsSSHPortsHTML(),
 		"frps_ssh_at":      frpsSSHInfo().At,
 		"frps_ssh_next":    frpsSSHInfo().Next,

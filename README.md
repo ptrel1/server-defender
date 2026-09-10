@@ -11,6 +11,15 @@
 - ✅ **前端内嵌**：HTML/CSS/JS/Chart.js 通过 `//go:embed` 打包进二进制，无外部静态目录
 - ✅ **数据兼容**：`data/*.json` 数据结构与 Python 版一致，迁移不丢历史封禁/事件
 
+## 🚀 v3.8.0 新增（2026-09-10）——配置哨兵 + 出站哨兵（dsh2shell 注入防线）
+
+背景：dsh2shell 攻击战役复发（9/4~9/7 注入 settings.yaml 恶意 provider 指向新 C2 `82.156.194.199:9999` + 审批策略被翻 never），3~6 天后才被发现。v3.8.0 补上这块监控盲区：
+
+- **配置哨兵（A 层）**：5 分钟轮询 `~/.dsh/settings.yaml`、`~/.dsh/.credentials.yaml`、`~/.dsh/AGENTS.md` 哈希，变更时规则扫描——① `dsh2shell` 金丝雀特征；② provider baseURL 指向公网 IP 非标端口裸 HTTP；③ 可疑凭据 key 名（只记名不落值）；④ 审批/安全开关翻 never。命中 ①② 提取到 C2 IP 即**自动双向封禁**（本机 iptables + 中转机同步）。
+- **出站哨兵（B 层）**：解析 `/proc/net/tcp(6)` ESTABLISHED，公网 IP 非白名单端口且 ≥3 连接、或命中历史 C2 端口（9999/5888/4603）→ 面板告警（只告警不封，避免误杀）。
+- **面板**：「主机」Tab 新增「🛰️ 配置哨兵」与「📡 可疑出站连接」卡片；状态持久化 `data/config_sentinel.json`，重启不丢基线。
+- 单测：`internal/service/configsentinel_loop_test.go`（四规则命中回归）。
+
 ## 🚀 v3.7.0 新增（2026-09-07）——月度流量用量细到「天 / 小时」粒度
 
 月度流量卡片内新增 **趋势双柱状图**（复用内嵌 Chart.js，零新依赖）：

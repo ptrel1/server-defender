@@ -367,6 +367,15 @@ tr:hover td { background:rgba(255,255,255,0.03); }
       <div class="card-header"><div class="card-title">⚡ 异常失控进程自愈收割战报</div><div class="count-badge" id="badge-reaper">0</div></div>
       <div id="container-reaper"><div class="empty-state"><div class="empty-icon">✅</div><span>系统平稳，未出现失控死循环孤儿进程</span></div></div>
     </div>
+    <!-- 配置哨兵（v3.8.0）：抓 dsh2shell 类配置注入，5min 轮询+自动封禁 -->
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">🛰️ 配置哨兵（settings/credentials 注入监控）</div><div class="count-badge" id="badge-sentinel">0</div></div>
+      <div id="container-sentinel"><div class="empty-state"><div class="empty-icon">⌛</div><span>配置基线扫描中...</span></div></div>
+    </div>
+    <div class="glass-card">
+      <div class="card-header"><div class="card-title">📡 可疑出站连接（裸端口 C2 特征）</div></div>
+      <div id="container-outbound"><div class="empty-state"><div class="empty-icon">✅</div><span>无可疑出站连接</span></div></div>
+    </div>
   </div>
   <div class="column">
     <div class="glass-card">
@@ -661,6 +670,13 @@ async function fetchData() {
     document.getElementById('container-top-ips').innerHTML = data.top_ips_html;
     document.getElementById('container-top-procs').innerHTML = data.top_procs_html;
     document.getElementById('container-reaper').innerHTML = data.reaper_events_html;
+    // 配置哨兵卡片（v3.8.0）
+    const cs = document.getElementById('container-sentinel');
+    if (cs) cs.innerHTML = data.sentinel_html || '';
+    const co = document.getElementById('container-outbound');
+    if (co) co.innerHTML = data.outbound_html || '';
+    const bs = document.getElementById('badge-sentinel');
+    if (bs) bs.textContent = data.sentinel_count || 0;
     document.getElementById('container-top-users').innerHTML = data.top_users_html;
     document.getElementById('container-f2b').innerHTML = data.f2b_html;
     document.getElementById('container-net-states').innerHTML = data.net_states_html;
