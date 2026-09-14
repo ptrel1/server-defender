@@ -363,7 +363,8 @@ diagnose_start_failure() {
   [ "$FOUND_LOG" -eq 0 ] && hint "未找到 supervisord 日志（试: sudo find / -maxdepth 5 -name 'supervisord.log'）"
 
   # 本服务日志
-  for LF in "$RELEASE_DIR/logs/$APP.log" "$RELEASE_DIR/logs/$APP.err.log"; do
+  for LF in "$RELEASE_DIR/logs/$SVC.log" "$RELEASE_DIR/logs/$SVC.err.log" \
+            "$RELEASE_DIR/logs/${APP:-$SVC}.log" "$RELEASE_DIR/logs/${APP:-$SVC}.err.log"; do
     if [ -s "$LF" ]; then
     echo "  ── $(basename "$LF") 尾部 ──" >&2
     tail -20 "$LF" | sed 's/^/  /' >&2 || true
@@ -502,21 +503,6 @@ do_deploy() {
   [ -d "$TARGET_DIR" ] || mkdir -p "$TARGET_DIR"
   local CONF_DEST="$TARGET_DIR/$CONF_NAME"
   mkdir -p "$RELEASE_DIR/logs"
-  if [ -z "${SUP_USER:-}" ]; then SUP_USER="$(id -un)"; fi
-  if [ "$SUP_USER" != "$RUN_USER" ]; then
-    if chown "$SUP_USER" "$RELEASE_DIR/logs" 2>/dev/null; then
-      info "logs/ 属主设为 supervisord 身份: $SUP_USER（与运行用户 $RUN_USER 不同，为可写性所需）"
-    fi
-  fi
-  chmod 755 "$RELEASE_DIR/logs" 2>/dev/null || true
-  if [ "$SUP_USER" != "root" ] && command -v su >/dev/null 2>&1; then
-    if ! su -s /bin/sh "$SUP_USER" -c "touch '$RELEASE_DIR/logs/.wtest' && rm -f '$RELEASE_DIR/logs/.wtest'" 2>/dev/null; then
-      err "logs/ 对 supervisord 身份($SUP_USER)不可写 —— 会导致启动 EACCES(BACKOFF)"
-      hint "修复: sudo chown -R $SUP_USER '$RELEASE_DIR/logs' && sudo chmod 755 '$RELEASE_DIR/logs'"
-      exit 1
-    fi
-    info "logs/ 可写性校验通过（身份 $SUP_USER）"
-  fi
 
   # 运行用户处理：缺失才创建；已存在则不动账号，仅提示不符项
   if ! id "$RUN_USER" >/dev/null 2>&1; then
@@ -595,6 +581,24 @@ do_deploy() {
      || chown -R "$RUN_USER" "$RELEASE_DIR" 2>/dev/null \
      || sudo -n chown -R "$RUN_USER" "$RELEASE_DIR" 2>/dev/null; then
     log "包目录属主已统一为 $RUN_USER"
+  fi
+
+  # ── logs/ 属主须匹配 **supervisord 身份**（EACCES 根因）──
+  # ⚠️ 必须在「属主归一 chown -R」**之后**：否则刚设的属主会被递归 chown 改回。
+  if [ -z "${SUP_USER:-}" ]; then SUP_USER="$(id -un)"; fi
+  if [ "$SUP_USER" != "$RUN_USER" ]; then
+    if chown "$SUP_USER" "$RELEASE_DIR/logs" 2>/dev/null; then
+      info "logs/ 属主设为 supervisord 身份: $SUP_USER（与运行用户 $RUN_USER 不同，为可写性所需）"
+    fi
+  fi
+  chmod 755 "$RELEASE_DIR/logs" 2>/dev/null || true
+  if [ "$SUP_USER" != "root" ] && command -v su >/dev/null 2>&1; then
+    if ! su -s /bin/sh "$SUP_USER" -c "touch '$RELEASE_DIR/logs/.wtest' && rm -f '$RELEASE_DIR/logs/.wtest'" 2>/dev/null; then
+      err "logs/ 对 supervisord 身份($SUP_USER)不可写 —— 会导致启动 EACCES(BACKOFF)"
+      hint "修复: sudo chown -R $SUP_USER '$RELEASE_DIR/logs' && sudo chmod 755 '$RELEASE_DIR/logs'"
+      exit 1
+    fi
+    info "logs/ 可写性校验通过（身份 $SUP_USER）"
   fi
   if ! sudo -u "$RUN_USER" test -w "$RELEASE_DIR" 2>/dev/null; then
     echo "[ERROR] $RUN_USER 对 $RELEASE_DIR 无写权限（会导致启动即退）" >&2
