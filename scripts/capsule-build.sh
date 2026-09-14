@@ -19,14 +19,20 @@ COMMAND="${1:-}"
 # ── 从 capsule.toml 读取契约字段（轻量解析：只取顶层/首个同名键）──
 # 段感知读取：toml_key <key> [section]
 # 只在该段范围内找键（避免同名键跨段误匹配，如 [deploy].cmd 与 [build].cmd）
+# 读取契约字段；**找不到键时返回空串且不使脚本失败**。
+# ⚠️ 关键：函数内 grep 无匹配会返回 1，在 `set -e` + 命令替换下会**静默终止整个脚本**
+#    （实踩：postsup 的 [build] 段只有注释、无 ldflags 键 → 构建脚本无输出直接退出、
+#     退出码 2，排查极难）。故函数体内所有可能返回非零的命令都以 `|| true` 兜底。
 toml_key() {
-  local key="$1" sect="${2:-}"
+  local key="$1" sect="${2:-}" out=""
   if [ -z "$sect" ]; then
-    grep -m1 -E "^[[:space:]]*${key}[[:space:]]*=" capsule.toml 2>/dev/null
+    out="$(grep -m1 -E "^[[:space:]]*${key}[[:space:]]*=" capsule.toml 2>/dev/null || true)"
   else
-    sed -n "/^\[${sect}\]/,/^\[/p" capsule.toml 2>/dev/null \
-      | grep -m1 -E "^[[:space:]]*${key}[[:space:]]*="
-  fi | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//'
+    out="$(sed -n "/^\[${sect}\]/,/^\[/p" capsule.toml 2>/dev/null \
+           | grep -m1 -E "^[[:space:]]*${key}[[:space:]]*=" || true)"
+  fi
+  printf '%s' "$out" | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//'
+  return 0
 }
 
 APP="$(toml_key app)"
