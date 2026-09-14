@@ -346,6 +346,13 @@ diagnose_start_failure() {
     hint "检查: grep -A2 '\[include' ${SUP_CONF:-/etc/supervisord.conf}"
     hint "然后: sudo $SUPERVISORCTL reread && sudo $SUPERVISORCTL update $SVC"
     ;;
+    *STARTING*)
+    err "根因：服务仍在 STARTING —— 它**没失败，只是没等够**"
+    hint "supervisor 状态机：spawn → STARTING（持续 startsecs 秒）→ RUNNING"
+    hint "若程序初始化较慢（首次生成配置/迁移数据等），startsecs 内没就绪属正常"
+    hint "处置：多等几秒查看 —— $SUPERVISORCTL status $SVC"
+    hint "     若长期停在 STARTING，再看下方程序日志判断是否卡住"
+    ;;
     *BACKOFF*|*FATAL*)
     err "根因：进程启动后立即退出（BACKOFF/FATAL）"
     hint "多为程序自身报错（端口占用/配置非法/依赖缺失）——见下方日志尾部"
@@ -365,7 +372,7 @@ diagnose_start_failure() {
   for LOGF in /var/log/supervisor/supervisord.log /var/log/supervisord.log \
         /main/log/supervisor/supervisord.log /tmp/supervisord.log; do
     if [ -f "$LOGF" ]; then
-    echo "  ── $LOGF 尾部 ──" >&2
+    echo "  ── $LOGF 尾部（⚠️ 含历史记录）──" >&2
     tail -20 "$LOGF" 2>/dev/null | sed 's/^/  /' >&2 || true
     FOUND_LOG=1
     fi
@@ -376,7 +383,7 @@ diagnose_start_failure() {
   for LF in "$RELEASE_DIR/logs/$SVC.log" "$RELEASE_DIR/logs/$SVC.err.log" \
             "$RELEASE_DIR/logs/${APP:-$SVC}.log" "$RELEASE_DIR/logs/${APP:-$SVC}.err.log"; do
     if [ -s "$LF" ]; then
-    echo "  ── $(basename "$LF") 尾部 ──" >&2
+    echo "  ── $(basename "$LF") 尾部（⚠️ 含历史记录）──" >&2
     tail -20 "$LF" | sed 's/^/  /' >&2 || true
     fi
   done
@@ -785,11 +792,44 @@ do_deploy() {
     exit 1
   fi
 
-  sleep 2
-  if "$SUPERVISORCTL" status "$SVC" 2>/dev/null | grep -q RUNNING; then
-    log "完成。运行数据 logs/、data/ 均在包目录内"
+  # ── 轮询等待进入 RUNNING（**不能用固定 sleep**）──
+  #
+  # 实踩（用户现场）：脚本原先 `sleep 2` 后判定，而 conf 的 `startsecs=3`，
+  #   supervisor 的状态机是 spawn → STARTING（持续 startsecs 秒）→ RUNNING
+  #   （源码 process.py transitions: `if now - self.laststart > self.config.startsecs`
+  #    才把 STARTING 置为 RUNNING）。
+  #   ⇒ **2 秒时服务仍在 STARTING，健康服务被误判为启动失败**，
+  #     用户看到 `postsup  STARTING` + 一段"未识别失败形态" + 陈旧的日志尾部，
+  #     极易被误导去查错误方向（本次就是这样绕了远路）。
+  #
+  # 修法：按 startsecs 动态等（从 conf 读，缺省 3），加余量并轮询，
+  #   只在**确认失败**（BACKOFF/FATAL/STOPPED/EXITED）或超时才判失败。
+  local START_SECS
+  START_SECS="$(grep -m1 -E '^[[:space:]]*startsecs[[:space:]]*=' "$CONF_DEST" 2>/dev/null \
+                | sed -E 's/^[^=]*=[[:space:]]*//' || true)"
+  case "$START_SECS" in
+    ''|*[!0-9]*) START_SECS=3 ;;   # 非数字/缺失 → 用 supervisor 默认 3
+  esac
+  local WAIT_MAX=$((START_SECS + 7))   # 余量：允许程序初始化比 startsecs 慢
+  local waited=0 st=""
+  info "等待服务进入 RUNNING（startsecs=${START_SECS}s，最多等 ${WAIT_MAX}s）"
+  while [ "$waited" -lt "$WAIT_MAX" ]; do
+    st="$("$SUPERVISORCTL" status "$SVC" 2>/dev/null || true)"
+    if echo "$st" | grep -q RUNNING; then
+      break
+    fi
+    # 已明确失败 → 立即停，不必等满
+    if echo "$st" | grep -qE 'BACKOFF|FATAL|STOPPED|EXITED'; then
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if echo "$st" | grep -q RUNNING; then
+    log "完成（${waited}s 后进入 RUNNING）。运行数据 logs/、data/ 均在包目录内"
   else
-    diagnose_start_failure "启动后未进入 RUNNING 状态"
+    diagnose_start_failure "启动后 ${waited}s 仍未进入 RUNNING（当前: $(echo "$st" | tr -s ' ' | cut -c1-80)）"
   fi
 }
 
