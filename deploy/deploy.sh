@@ -115,62 +115,40 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════
-# ── 部署身份校验（协议 §3.4.2）：三类**严格互斥**，用错即拒 ──
+# ── 部署权限校验（协议 §3.4.2.1 修订版）：统一 sudo 执行 ──
 # ══════════════════════════════════════════════════════════════════
-# 为什么要分类：部署"用什么权限跑"与"服务以谁的身份运行"必须明确，
-# 不能靠脚本猜。契约用 deploy_as 声明唯一允许的执行身份。
+# 设计（20260914 修订，替代原「三类严格互斥」）：
+#   · **开发者**在契约里写清"需要什么权限"（run_as_root / run_groups / run_paths）；
+#   · **部署者**一律 `sudo ./deploy.sh` —— 脚本只要求 euid==0，
+#     不区分"root 直登"还是"sudo 提权"。
 #
-#   执行身份判定（互斥）：
-#     root  : euid==0 且 $SUDO_USER 为空     （root 直接登录执行）
-#     sudo  : $SUDO_USER 非空                （普通用户 sudo 借权限）
-#     user  : euid!=0 且无 $SUDO_USER        （纯普通用户）
+# 为什么放弃三类互斥：`sudo su`/`sudo -i`/`sudo bash` 都能拿到完整 root 权限，
+# 但 SUDO_USER 由 sudo **主动写入**（审计用途）且 su 默认不清理 ——
+# 于是"最自然的提权操作"反而被拒，而"怎么变成 root 的"对部署结果毫无影响。
+# 真正该约束的是「**服务以谁的身份运行**」，那由 run_as_root 显式声明。
 EUID_NOW="$(id -u)"
-ACTUAL_AS=""
-if [ "$EUID_NOW" -eq 0 ] && [ -z "${SUDO_USER:-}" ]; then
-  ACTUAL_AS="root"
-elif [ -n "${SUDO_USER:-}" ]; then
-  ACTUAL_AS="sudo"
-elif [ "$EUID_NOW" -ne 0 ]; then
-  ACTUAL_AS="user"
-fi
+ELEVATED_VIA_SUDO="${SUDO_USER:-}"
 
-if [ -z "$DEPLOY_AS" ]; then
-  echo "[ERROR] 契约缺少 deploy_as（应为 root | sudo | user）" >&2
-  echo "        请在 capsule.toml 的 [deploy] 段显式声明部署身份。" >&2
-  exit 1
-fi
-
-if [ "$ACTUAL_AS" != "$DEPLOY_AS" ]; then
-  echo "[ERROR] 部署身份不匹配（三类严格互斥）" >&2
-  echo "        契约要求: $DEPLOY_AS" >&2
-  echo "        当前实际: $ACTUAL_AS（$(id -un)${SUDO_USER:+ ；SUDO_USER=$SUDO_USER}）" >&2
+if [ "$EUID_NOW" -ne 0 ]; then
+  echo "[ERROR] 本脚本需要 root 权限（当前 euid=$EUID_NOW，用户 $(id -un)）。" >&2
   echo "" >&2
-  case "$DEPLOY_AS" in
-    root) echo "        本服务需以 root 运行（如执行 iptables、管理 supervisord）。" >&2
-          echo "        请用 root 账户直接执行：sudo -i 后再运行本脚本。" >&2 ;;
-    sudo) echo "        请用普通用户加 sudo 执行：sudo ./deploy.sh" >&2 ;;
-    user) echo "        请用普通用户直接执行：./deploy.sh（不要用 sudo）" >&2
-          echo "        注意：本类要求目标机已预配 supervisor 配置目录的写权限" >&2
-          echo "        （一次性执行，例：sudo setfacl -m u:$(id -un):rwx <conf.d 目录>）" >&2 ;;
+  echo "        请用以下任一方式重新执行：" >&2
+  echo "            sudo ./deploy.sh" >&2
+  echo "            sudo -i  然后 ./deploy.sh" >&2
+  echo "" >&2
+  case "$RUN_AS_ROOT" in
+    true)  echo "        说明：本服务声明 run_as_root=true，需 root 权限部署。" >&2 ;;
+    false) echo "        说明：本服务服务进程将以 $RUN_USER 运行，但部署动作（写 supervisor 配置）仍需 root。" >&2 ;;
   esac
   exit 1
 fi
 
-case "$ACTUAL_AS" in
-  root) log "部署身份: root（服务将以 root 运行）" ;;
-  sudo) log "部署身份: sudo（服务将以 $SUDO_USER 运行）" ;;
-  user) log "部署身份: user（服务将以 $(id -un) 运行）" ;;
-esac
-
-# 服务运行身份与声明一致性（run_as_root 与 deploy_as 必须自洽）
-if [ "$RUN_AS_ROOT" = "true" ] && [ "$ACTUAL_AS" != "root" ]; then
-  echo "[ERROR] 契约声明 run_as_root=true，但部署身份是 $ACTUAL_AS（服务无法以 root 运行）" >&2
-  exit 1
+if [ -n "$ELEVATED_VIA_SUDO" ]; then
+  log "部署权限: root（经 sudo 提权，操作者=$ELEVATED_VIA_SUDO）"
+else
+  log "部署权限: root（root 直登）"
 fi
-if [ "$RUN_AS_ROOT" != "true" ] && [ "$ACTUAL_AS" = "root" ]; then
-  echo "[ERROR] 契约声明 run_as_root=false，但部署身份是 root（服务将以 root 运行，与声明矛盾）" >&2
-  exit 1
-fi
+log "服务运行身份: $( [ "$RUN_AS_ROOT" = "true" ] && echo "root（契约声明 run_as_root=true）" || echo "$RUN_USER（契约声明 run_as_root=false）" )"
 
 # ── 路径安全校验（协议 §3.4.1 红线）──
 # 为什么必须有：脚本含 `chown -R "$RUN_USER" "$RELEASE_DIR"`。

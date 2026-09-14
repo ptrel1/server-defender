@@ -17,7 +17,7 @@ user_default = "root"
 #   本项目声明 root —— 安全防护服务需执行特权系统命令：
 #     iptables -A INPUT/OUTPUT -j DROP（封禁 IP，需 CAP_NET_ADMIN）
 #     systemctl / pacman / dpkg 查询（开机项审计）
-#   故运行身份必须 root。部署方式：sudo -i 后再执行 ./deploy.sh
+#   故运行身份必须 root。部署方式：sudo ./deploy.sh（统一 sudo；脚本只校验 euid==0）
 deploy_as = "root"
 
 # ── 运行所需权限（部署者据此预配；脚本据此校验）──
