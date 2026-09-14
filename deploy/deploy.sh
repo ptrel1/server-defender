@@ -31,6 +31,12 @@ PACK_ONLY=0
 # 安全边界：默认保守（不动系统资源）。见协议 §3.4.2
 CREATE_USER=0   # --create-user 才允许 useradd
 FIX_INCLUDE=0   # --fix-include 才允许改 supervisor 主配置
+# 降级部署（supervisord 非 root 却要管 run_as_root=true 的服务时）
+DEGRADE_USER=""
+ALLOW_DEGRADE=0
+ASSUME_YES=0
+NON_INTERACTIVE=0
+DEGRADED=0
 DRY_RUN=0       # --dry-run 只打印计划，不落盘
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,6 +50,10 @@ while [ $# -gt 0 ]; do
     --create-user)  CREATE_USER=1; shift ;;
     --fix-include)  FIX_INCLUDE=1; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
+    --yes|-y)       ASSUME_YES=1; shift ;;
+    --non-interactive) ASSUME_YES=1; NON_INTERACTIVE=1; shift ;;
+    --fallback-user) DEGRADE_USER="${2:?--fallback-user 需要参数}"; shift 2 ;;
+    --allow-degrade) ALLOW_DEGRADE=1; shift ;;
     *) echo "[ERROR] 未知参数: $1" >&2
        echo "        支持: --pack / --user <用户> / --create-user / --fix-include / --dry-run / --version" >&2
        exit 1 ;;
@@ -425,6 +435,84 @@ do_deploy() {
   [ -n "${SUP_USER:-}" ] || SUP_USER="$(id -un)"
   log "supervisord 身份: ${SUP_USER}（pid ${SUP_PID:-未运行}）"
   [ -n "$SUP_CMD" ] && info "进程: $SUP_CMD"
+
+  # ── 前置检查：supervisord 身份 vs 契约 run_as_root（**在任何写操作之前**）──
+  #
+  # supervisor 硬约束（源码 options.py drop_privileges）：
+  #   current_uid == uid  → 无需切换，放行
+  #   current_uid != 0    → 返回 "Can't drop privilege as nonroot user"
+  # 即：supervisord **自己必须是 root** 才能把子进程 setuid 到 root。
+  # 若 supervisord 以普通用户运行而契约要求 run_as_root=true → 必然 spawn 失败：
+  #   supervisor: couldn't setuid to 0: Can't drop privilege as nonroot user
+  # 与其等到启动失败留一堆现场，不如**提前拦住并给出选择**。
+  if [ "$RUN_AS_ROOT" = "true" ] && [ -n "${SUP_USER:-}" ] && [ "$SUP_USER" != "root" ]; then
+    echo "" >&2
+    err "权限模型冲突：supervisord 无法以 root 启动本服务"
+    hint "supervisord 当前以 **$SUP_USER** 运行，而契约声明 run_as_root=true"
+    hint "supervisor 硬约束：非 root 的 supervisord 不能把子进程 setuid 到 root"
+    hint "（源码 options.py: if current_uid != 0: return \"Can't drop privilege as nonroot user\"）"
+    echo "" >&2
+    echo "  可选处置：" >&2
+    echo "    [1] 降级部署 —— 本服务改以 $SUP_USER 运行（立刻可用）" >&2
+    echo "        代价：PostSup 将无法管理其他 supervisor 服务（需 root 才能操作）" >&2
+    echo "    [2] 中止部署 —— 先让 supervisord 以 root 运行（保持契约语义）" >&2
+    echo "        做法：改 systemd 单元或 /etc/supervisord.conf 的 [supervisord] user，" >&2
+    echo "              重启 supervisord（**会重启它管理的所有服务**）后重跑本脚本" >&2
+    echo "    [3] 仅查看诊断 —— 不部署，只打印排查步骤" >&2
+    echo "" >&2
+
+    CHOICE=""
+    # 决策优先级：显式 --fallback-user > --allow-degrade > 交互询问 > 默认中止
+    if [ -n "$DEGRADE_USER" ]; then
+      CHOICE="1"
+      info "已按 --fallback-user $DEGRADE_USER 选择降级部署（非交互）"
+    elif [ "$ALLOW_DEGRADE" -eq 1 ]; then
+      DEGRADE_USER="$SUP_USER"
+      CHOICE="1"
+      info "已按 --allow-degrade 选择降级到 $SUP_USER（非交互）"
+    elif [ "$DRY_RUN" -eq 0 ] && [ -t 0 ] && [ -t 1 ] && [ "$ASSUME_YES" -eq 0 ]; then
+      # 仅真实交互终端才询问（管道/CI/--yes 一律走默认中止，避免卡住自动化）
+      printf "  请选择 [1/2/3]（默认 2 中止）: " >&2
+      read -r REPLY || REPLY=""
+      case "$REPLY" in
+        1|y|Y) CHOICE="1" ;;
+        3|d|D) CHOICE="3" ;;
+        *)     CHOICE="2" ;;
+      esac
+    else
+      CHOICE="2"
+      [ "$DRY_RUN" -eq 1 ] && info "（dry-run：仅展示冲突，不落盘；默认将中止）"
+    fi
+
+    case "$CHOICE" in
+      1)
+        # 降级：把运行用户改为 supervisord 身份，**不改契约文件**（仅本次部署生效）
+        DEGRADE_USER="${DEGRADE_USER:-$SUP_USER}"
+        if ! id "$DEGRADE_USER" >/dev/null 2>&1; then
+          die "降级目标用户不存在: $DEGRADE_USER"
+        fi
+        warn "【降级部署】服务将以 **$DEGRADE_USER** 运行（契约仍声明 run_as_root=true，未改动）"
+        hint "PostSup 将无法管理其他 supervisor 服务（需 root 才能操作）——这是降级的代价"
+        hint "如要恢复：让 supervisord 以 root 运行后重新部署"
+        RUN_USER="$DEGRADE_USER"
+        RUN_AS_ROOT="false"
+        DEGRADED=1
+        ;;
+      3)
+        hint "排查步骤："
+        hint "  1) 确认 supervisord 启动方式: ps -eo user,pid,args | grep '[s]upervisord'"
+        hint "  2) 若为 systemd: systemctl cat supervisor | grep -E 'User|ExecStart'"
+        hint "  3) 若直接启动: grep -A5 '^\\[supervisord\\]' /etc/supervisord.conf"
+        hint "  4) 改为 root 后重启 supervisord（注意会重启其管理的所有服务）"
+        exit 1
+        ;;
+      *)
+        err "已中止部署（未做任何改动）"
+        hint "如确要降级部署，重跑并加: --fallback-user $SUP_USER"
+        exit 1
+        ;;
+    esac
+  fi
 
   if [ -n "$SUP_CONF" ] && [ -f "$SUP_CONF" ]; then
     log "supervisor 主配置: $SUP_CONF"
