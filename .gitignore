@@ -22,3 +22,11 @@ app.toml.bak
 test/
 update_package/
 dev/logs/
+
+# >>> psup-capsule（由 `psupd capsule init` 维护，勿手改本段）
+dist/
+deploy/release/
+config/config.toml
+config/*.local.toml
+logs/
+# <<< psup-capsule
