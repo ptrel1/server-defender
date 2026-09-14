@@ -3,7 +3,7 @@
 # 契约是构建/校验的**唯一事实源**：scripts/capsule-build.sh 与 deploy/deploy.sh 均据此工作。
 schema  = "psup-capsule/v1"
 app     = "server-defender"
-version = "v3.8.0"
+version = "v3.8.1"
 
 [deploy]
 type         = "go-single"

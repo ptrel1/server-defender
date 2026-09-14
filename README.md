@@ -11,6 +11,24 @@
 - ✅ **前端内嵌**：HTML/CSS/JS/Chart.js 通过 `//go:embed` 打包进二进制，无外部静态目录
 - ✅ **数据兼容**：`data/*.json` 数据结构与 Python 版一致，迁移不丢历史封禁/事件
 
+## 🚀 v3.8.1 修复（2026-09-14）——ProcTrace 自身吃 CPU（ausearch 全量扫描）
+
+**现象**：本机周期性抓到 `ausearch -k PROC_EXEC` 单进程 **98.5% CPU**（打满 1 核）。
+
+**根因**：ProcTrace 的 `loadAuditExecs` 调 `ausearch` 时**未加时间窗**，每次都会扫描 `/var/log/audit/` 下**全部轮转文件**（本机 50 个 ≈ 988MB）：
+
+| 指标 | 修复前 | 修复后（`-ts recent`） |
+|---|---|---|
+| 扫描量 | 988 MB | 当前文件窗口 |
+| 输出 | 251 MB / 185 万行 | **6.2 MB** |
+| 单次耗时 | **5.95 s** | **0.36 s** |
+| CPU 占用 | 6s/60s ≈ **10%** | ≈ 0.6% |
+
+**连带副作用（已消除）**：该自造 CPU 尖峰会被本模块**自己的 CPU 监控**记为「CPU≥85%」告警——属**监控行为污染被监控指标**，导致 `data/cpu_spike.json` 长期虚高。
+
+**改动**：`internal/service/proctrace_loop.go` 加 `"-ts", "recent"`；实测父链溯源能力不变（2000/2000 条字段完整、`resolveSource` 回溯链正常）。
+**注意**：ausearch 时间参数只接受相对词（`recent`/`today`/`yesterday`），`MM/DD/YYYY` 会报错。
+
 ## 🚀 v3.8.0 新增（2026-09-10）——配置哨兵 + 出站哨兵（dsh2shell 注入防线）
 
 背景：dsh2shell 攻击战役复发（9/4~9/7 注入 settings.yaml 恶意 provider 指向新 C2 `82.156.194.199:9999` + 审批策略被翻 never），3~6 天后才被发现。v3.8.0 补上这块监控盲区：

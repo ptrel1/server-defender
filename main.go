@@ -1,4 +1,9 @@
-// Server Defender — 服务器安全与自愈中心 (Go 版 v3.8.0)
+// Server Defender — 服务器安全与自愈中心 (Go 版 v3.8.1)
+// v3.8.1: 修复 ProcTrace 自身吃 CPU —— loadAuditExecs 调 ausearch 时未加时间窗，
+//         会全量扫描 /var/log/audit 下全部轮转文件（本机实测 50 个 ≈ 988MB），
+//         单次约 6s 打满 1 核，每 60s 一轮 ≈ 吃掉 10% CPU，且输出 251MB/185 万行。
+//         因监控行为污染被监控指标，还导致本模块自身反复误报 "CPU≥85%"。
+//         加 `-ts recent`（最近 10 分钟）后实测 6.2MB / 0.36s，父链解析功能不变。
 // v3.8.0: 配置哨兵+出站哨兵——5min 轮询 ~/.dsh 关键配置(settings/credentials/AGENTS.md)，
 //         哈希 diff+规则扫描抓 dsh2shell 类注入(canary/provider裸IP C2/可疑key/审批never)，
 //         命中即自动双向封禁 C2(复用 BlockIP+中转机同步)；另扫描 ESTABLISHED 出站，
@@ -209,7 +214,7 @@ func main() {
 		port = "8899"
 	}
 	addr := "0.0.0.0:" + port
-	fmt.Println("[server-defender] v3.8.0 Go 版启动，监听", addr)
+	fmt.Println("[server-defender] v3.8.1 Go 版启动，监听", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[main] server err:", err)
 		os.Exit(1)

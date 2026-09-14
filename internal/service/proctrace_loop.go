@@ -75,10 +75,19 @@ var (
 func ptPath() string { return filepath.Join(dataDir(), "proctrace.json") }
 
 // loadAuditExecs 调 ausearch 拉最近 exec 事件（只读，不含 bus 系统命令）。
+//
+// 【关键约束】必须带 `-ts recent` 时间窗：否则 ausearch 会扫描 /var/log/audit 下
+// 全部轮转文件（本机实测 50 个 ≈ 988MB），单次约 6s 且打满 1 个核；每 60s 触发
+// 一次 ≈ 吃掉 10% CPU；输出高达 251MB/185 万行，还会让本模块自身的 CPU 监控
+// 反复误报 "CPU≥85%"——监控行为污染被监控指标，属自造的假警报。
+// 加 `-ts recent`（最近 10 分钟）后实测 6.2MB / 0.36s，与 60s 刷新周期相匹配。
+//
+// 注意：ausearch 时间参数只接受相对词（recent/today/yesterday），
+// MM/DD/YYYY 格式会直接报错（见 ptrelskill cross/security.md）。
 func loadAuditExecs(limit int) []AuditExec {
 	var execs []AuditExec
 	// ausearch 原生输出含 pid/ppid/exe/comm/auid；grep 关键字段几节
-	raw, _ := exec.Command("ausearch", "-k", "PROC_EXEC").Output()
+	raw, _ := exec.Command("ausearch", "-k", "PROC_EXEC", "-ts", "recent").Output()
 	// 按事件块解析（type=SYSCALL ... pid= ppid= comm= exe= auid=）
 	cur := AuditExec{}
 	var block []string
