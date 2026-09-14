@@ -81,10 +81,11 @@ else
       | sed -E 's/^([a-z0-9]+)-([a-z0-9]+)$/\1\/\2/' | tr '\n' ' ')"
 fi
 
-# cgo 项目无法交叉编译（协议明确排除）
-if grep -rqE '^import "C"|^// *#cgo' --include='*.go' . 2>/dev/null; then
-  echo "[ERROR] 检测到 cgo，无法交叉编译；胶囊协议不支持 cgo 项目" >&2; exit 1
-fi
+# 注：cgo 依赖**不在此处 grep 检测** —— 实踩：`grep -r 'import "C"'` 会扫到
+# verify/gocache 等**模块缓存**里的第三方文件（如 x/net 的 defs_*.go），
+# 把纯 Go 项目误判为 cgo 项目而拒绝构建（margin-workspace 实测）。
+# 权威判据是**编译器本身**：下方「平台可编译性预检」会用 CGO_ENABLED=0
+# 逐平台试编译，真正的 cgo 依赖会在那里以明确的编译错误暴露。
 
 if [ -z "$PLATFORMS" ]; then
   echo "==> 契约未声明 [platforms]：按单平台构建（仅本机平台）"

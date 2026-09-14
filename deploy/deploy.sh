@@ -319,18 +319,39 @@ do_deploy() {
   # 兜底：无论何种解压方式（zip 会丢权限位）都确保可执行
   chmod +x "$BIN" 2>/dev/null || true
 
-  # 备份现有线上配置，启动失败时可回滚
-  [ -f "$CONF_DEST" ] && { cp "$CONF_DEST" "$CONF_DEST.bak" 2>/dev/null || warn "无法备份 $CONF_DEST"; }
+  # ── 凭据护栏（保守策略：宁可不改，不覆盖现场）──
+  # 背景：按宪法规矩，SECRET_KEY / BOOTSTRAP_USERS 等明文**只落 supervisor conf 一份**；
+  #      而 conf 模板要进 git，必须留空（不能带真实值）。
+  # 风险：若用空值模板覆盖现场 conf，服务会以空 SECRET_KEY 启动（会话可预测）
+  #      = 安全退化，且原凭据永久丢失。
+  # 策略：**检测到现场 conf 含非空凭据时，完全不覆盖**，只提示人工合并 ——
+  #      这与 migrate「只补缺失、绝不覆盖」的原则一致，避免脆弱的字符串搬运
+  #      （实测：用 sed/awk 搬运含引号/逗号的 JSON 型凭据极易出错）。
+  local CRED_RE='(SECRET_KEY|BOOTSTRAP_USERS|PASSWORD|TOKEN|API_KEY)="[^"]+"'
+  if [ -f "$CONF_DEST" ] && grep -qE "$CRED_RE" "$CONF_DEST" 2>/dev/null; then
+    cp "$CONF_DEST" "$CONF_DEST.bak" 2>/dev/null || true
+    warn "现场配置 $CONF_DEST 含凭据（SECRET_KEY/BOOTSTRAP_USERS 等）。"
+    warn "为避免覆盖现场凭据，**本次不生成 supervisor 配置**（保留原文件不动）。"
+    warn "如需更新该配置，请人工合并以下差异后执行: supervisorctl reread && supervisorctl update"
+    warn "  期望内容（占位符已替换，凭据处为空）："
+    sed -e "s|@DIR@|$RELEASE_DIR|g" -e "s|@USER@|$RUN_USER|g" -e "s|@BIN@|$BIN_PATH|g" \
+        "$RELEASE_DIR/$CONF_NAME" | sed 's/^/      /' >&2
+    warn "  当前现场（已备份到 $CONF_DEST.bak）："
+    sed 's/^/      /' "$CONF_DEST" | sed -E 's/((SECRET_KEY|BOOTSTRAP_USERS|PASSWORD|TOKEN|API_KEY)=")[^"]+/\1<REDACTED>/' >&2
+    echo "" >&2
+    echo "  提示：若本次只是换二进制（无配置变更），可忽略本提示。" >&2
+    echo "        部署将继续进行（二进制已就位），但 supervisor 配置保持现场版本。" >&2
+    SKIP_CONF_WRITE=1
+  fi
 
-  log "生成 supervisor 配置 -> $CONF_DEST"
-  # @BIN@ = 运行载体绝对路径（单/多平台位置不同，须由脚本填入）。
-  # ⚠️ 曾因只替换 @DIR@/@USER@ 而漏掉 @BIN@：多平台包的 conf 仍指向 <包>/bin/<app>，
-  #    而实际在 <包>/bin/<os>-<arch>/<app> → supervisor 启动即 "no such file"。
-  sed -e "s|@DIR@|$RELEASE_DIR|g" \
-      -e "s|@USER@|$RUN_USER|g" \
-      -e "s|@BIN@|$BIN_PATH|g" \
-      "$RELEASE_DIR/$CONF_NAME" > "$CONF_DEST"
-  chmod 644 "$CONF_DEST"
+  if [ "${SKIP_CONF_WRITE:-0}" -eq 0 ]; then
+    log "写入 supervisor 配置 -> $CONF_DEST"
+    sed -e "s|@DIR@|$RELEASE_DIR|g" \
+        -e "s|@USER@|$RUN_USER|g" \
+        -e "s|@BIN@|$BIN_PATH|g" \
+        "$RELEASE_DIR/$CONF_NAME" > "$CONF_DEST"
+    chmod 644 "$CONF_DEST"
+  fi
 
   # reread/update 输出透出（不吞）：available/added/错误信息对诊断至关重要
   "$SUPERVISORCTL" reread || {
