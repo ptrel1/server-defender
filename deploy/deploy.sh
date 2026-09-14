@@ -66,8 +66,16 @@ CONF_NAME=""
             | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//')"
 [ -n "$CONF_NAME" ] || CONF_NAME="server-defender.conf"
 
+# ── 日志辅助（分级 + 步骤编号）──
+STEP_NO=0
+STEP_TOTAL=6
 log()  { echo "==> $*"; }
+info() { echo "    · $*"; }
+step() { STEP_NO=$((STEP_NO + 1)); echo ""; echo "═══ 步骤 $STEP_NO/$STEP_TOTAL: $* ═══"; }
 warn() { echo "[WARN] $*" >&2; }
+err()  { echo "[ERROR] $*" >&2; }
+die()  { err "$@"; exit 1; }
+hint() { echo "        ↳ $*" >&2; }
 
 # ── 三态探测(协议 cross/capsule-protocol.md §3) ──
 #   1. 离线多平台态:同目录 bin/<os>-<arch>/ 存在 → uname 自动挑平台(合并包场景)
@@ -276,6 +284,102 @@ do_pack() {
 }
 
 # ── 部署（各态通用；路径均按包实际位置生成）──
+# 渲染 supervisor conf 模板：**所有占位符替换的唯一真源**（新增 @HOME@）。
+render_conf() {
+  local tpl="$1"
+  local home
+  home="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6 || true)"
+  if [ -z "$home" ]; then
+    if [ "$RUN_USER" = "root" ]; then home="/root"; else home="/home/$RUN_USER"; fi
+  fi
+  sed -e "s|@DIR@|$RELEASE_DIR|g" \
+      -e "s|@USER@|$RUN_USER|g" \
+      -e "s|@HOME@|$home|g" \
+      -e "s|@BIN@|$BIN_PATH|g" \
+      "$tpl"
+}
+
+diagnose_start_failure() {
+  local REASON="${1:-未知}"
+  err "启动 $SVC 失败，开始诊断"
+  local ST_OUT
+  ST_OUT="$("$SUPERVISORCTL" status "$SVC" 2>&1 || true)"
+  echo "$ST_OUT" | sed 's/^/  /' >&2
+
+  echo "" >&2
+  echo "  ── 现场快照（请连同本段一起反馈）──" >&2
+  {
+    echo "  supervisord 身份 : ${SUP_USER:-?} (pid ${SUP_PID:-无})"
+    echo "  部署者身份     : $(id -un) (euid=$(id -u)${SUDO_USER:+ ; SUDO_USER=$SUDO_USER})"
+    echo "  服务运行用户   : $RUN_USER"
+    echo "  运行载体     : $BIN_PATH"
+    echo "  载体权限     : $(stat -c '%U:%G %a' "$BIN_PATH" 2>/dev/null || echo 缺失)"
+    echo "  logs/ 属主与权限 : $(stat -c '%U:%G %a' "$RELEASE_DIR/logs" 2>/dev/null || echo 缺失)"
+    echo "  conf 落点    : $CONF_DEST"
+    echo "  包内 ops.toml  : $([ -f "$RELEASE_DIR/ops.toml" ] && echo 存在 || echo '缺失(首次启动会自动生成)')"
+  } | sed 's/^/  /' >&2
+
+  # 按状态文本给出**定向**根因与修复命令（而不是让用户自己猜）
+  echo "" >&2
+  case "$ST_OUT" in
+    *EACCES*|*"making dispatchers"*)
+    err "根因：supervisord 打不开日志文件（EACCES）"
+    hint "supervisord 在 fork 前以**自己的身份**打开 stdout_logfile；"
+    hint "若 logs/ 属主与 supervisord 身份不一致即失败（手工前台能跑、supervisor 拉起必挂）"
+    hint "修复: sudo chown -R ${SUP_USER:-<supervisord用户>} '$RELEASE_DIR/logs'"
+    hint "    sudo chmod 755 '$RELEASE_DIR/logs'"
+    hint "    然后: sudo $SUPERVISORCTL restart $SVC"
+    ;;
+    *"no such process"*)
+    err "根因：supervisor 未加载本包配置"
+    hint "确认主配置含 [include] files = $CONF_D/*.conf"
+    hint "检查: grep -A2 '\[include' ${SUP_CONF:-/etc/supervisord.conf}"
+    hint "然后: sudo $SUPERVISORCTL reread && sudo $SUPERVISORCTL update $SVC"
+    ;;
+    *BACKOFF*|*FATAL*)
+    err "根因：进程启动后立即退出（BACKOFF/FATAL）"
+    hint "多为程序自身报错（端口占用/配置非法/依赖缺失）——见下方日志尾部"
+    ;;
+    *"can't setuid"*|*setuid*)
+    err "根因：supervisord 无法切换到 user=$RUN_USER"
+    hint "检查该用户是否存在: id $RUN_USER"
+    ;;
+    *)
+    warn "未识别的失败形态，见下方日志尾部"
+    ;;
+  esac
+
+  # supervisor 主日志（多个候选位置都扫，不只第一个存在的）
+  echo "" >&2
+  local FOUND_LOG=0
+  for LOGF in /var/log/supervisor/supervisord.log /var/log/supervisord.log \
+        /main/log/supervisor/supervisord.log /tmp/supervisord.log; do
+    if [ -f "$LOGF" ]; then
+    echo "  ── $LOGF 尾部 ──" >&2
+    tail -20 "$LOGF" 2>/dev/null | sed 's/^/  /' >&2 || true
+    FOUND_LOG=1
+    fi
+  done
+  [ "$FOUND_LOG" -eq 0 ] && hint "未找到 supervisord 日志（试: sudo find / -maxdepth 5 -name 'supervisord.log'）"
+
+  # 本服务日志
+  for LF in "$RELEASE_DIR/logs/$APP.log" "$RELEASE_DIR/logs/$APP.err.log"; do
+    if [ -s "$LF" ]; then
+    echo "  ── $(basename "$LF") 尾部 ──" >&2
+    tail -20 "$LF" | sed 's/^/  /' >&2 || true
+    fi
+  done
+
+  # 手工前台试跑（最直接的排除法：程序能不能独立起来）
+  echo "" >&2
+  hint "手动前台验证（能起来=问题在 supervisor 侧；不能=问题在程序侧）:"
+  hint "  sudo '$BIN_PATH' --config '$RELEASE_DIR/ops.toml'"
+
+  echo "" >&2
+  hint "可回滚: cp $CONF_DEST.bak $CONF_DEST 2>/dev/null; $SUPERVISORCTL update $SVC"
+  return 1
+}
+
 do_deploy() {
   # 载体路径：探测阶段已确定（单平台直接在 bin/ 或包根；多平台由 detect_binary 选定）。
   # ⚠️ 曾因条件写成 `[ -d bin ]` 而误判：单平台包的二进制也在 bin/ 下，
@@ -307,6 +411,20 @@ do_deploy() {
       [ -f "$p" ] && { SUP_CONF="$p"; break; }
     done
   fi
+  # supervisord 进程身份探测（决定 logs/ 属主能否写入 —— EACCES 根因）
+  local SUP_BIN SUP_PID SUP_CMD
+  SUP_BIN="$(command -v supervisord 2>/dev/null || echo "")"
+  SUP_PID="$(pgrep -x supervisord 2>/dev/null | head -1 || true)"
+  if [ -n "${SUP_PID:-}" ]; then
+    SUP_USER="$(ps -o user= -p "$SUP_PID" 2>/dev/null | tr -d ' ' || true)"
+    SUP_CMD="$(ps -o args= -p "$SUP_PID" 2>/dev/null | head -c 200 || true)"
+  else
+    SUP_USER=""; SUP_CMD=""
+  fi
+  [ -n "${SUP_USER:-}" ] || SUP_USER="$(id -un)"
+  log "supervisord 身份: ${SUP_USER}（pid ${SUP_PID:-未运行}）"
+  [ -n "$SUP_CMD" ] && info "进程: $SUP_CMD"
+
   if [ -n "$SUP_CONF" ] && [ -f "$SUP_CONF" ]; then
     log "supervisor 主配置: $SUP_CONF"
     INC_LINE="$(sed -n '/^\[include\]/,/^\[/p' "$SUP_CONF" | grep -E '^[[:space:]]*files?[[:space:]]*=' | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//' || true)"
@@ -384,6 +502,21 @@ do_deploy() {
   [ -d "$TARGET_DIR" ] || mkdir -p "$TARGET_DIR"
   local CONF_DEST="$TARGET_DIR/$CONF_NAME"
   mkdir -p "$RELEASE_DIR/logs"
+  if [ -z "${SUP_USER:-}" ]; then SUP_USER="$(id -un)"; fi
+  if [ "$SUP_USER" != "$RUN_USER" ]; then
+    if chown "$SUP_USER" "$RELEASE_DIR/logs" 2>/dev/null; then
+      info "logs/ 属主设为 supervisord 身份: $SUP_USER（与运行用户 $RUN_USER 不同，为可写性所需）"
+    fi
+  fi
+  chmod 755 "$RELEASE_DIR/logs" 2>/dev/null || true
+  if [ "$SUP_USER" != "root" ] && command -v su >/dev/null 2>&1; then
+    if ! su -s /bin/sh "$SUP_USER" -c "touch '$RELEASE_DIR/logs/.wtest' && rm -f '$RELEASE_DIR/logs/.wtest'" 2>/dev/null; then
+      err "logs/ 对 supervisord 身份($SUP_USER)不可写 —— 会导致启动 EACCES(BACKOFF)"
+      hint "修复: sudo chown -R $SUP_USER '$RELEASE_DIR/logs' && sudo chmod 755 '$RELEASE_DIR/logs'"
+      exit 1
+    fi
+    info "logs/ 可写性校验通过（身份 $SUP_USER）"
+  fi
 
   # 运行用户处理：缺失才创建；已存在则不动账号，仅提示不符项
   if ! id "$RUN_USER" >/dev/null 2>&1; then
@@ -486,8 +619,7 @@ do_deploy() {
     warn "为避免覆盖现场凭据，**本次不生成 supervisor 配置**（保留原文件不动）。"
     warn "如需更新该配置，请人工合并以下差异后执行: supervisorctl reread && supervisorctl update"
     warn "  期望内容（占位符已替换，凭据处为空）："
-    sed -e "s|@DIR@|$RELEASE_DIR|g" -e "s|@USER@|$RUN_USER|g" -e "s|@BIN@|$BIN_PATH|g" \
-        "$RELEASE_DIR/$CONF_NAME" | sed 's/^/      /' >&2
+    render_conf "$RELEASE_DIR/$CONF_NAME" | sed 's/^/      /' >&2
     warn "  当前现场（已备份到 $CONF_DEST.bak）："
     sed 's/^/      /' "$CONF_DEST" | sed -E 's/((SECRET_KEY|BOOTSTRAP_USERS|PASSWORD|TOKEN|API_KEY)=")[^"]+/\1<REDACTED>/' >&2
     echo "" >&2
@@ -527,10 +659,7 @@ do_deploy() {
       exit 1
     fi
     log "写入 supervisor 配置 -> $CONF_DEST"
-    sed -e "s|@DIR@|$RELEASE_DIR|g" \
-        -e "s|@USER@|$RUN_USER|g" \
-        -e "s|@BIN@|$BIN_PATH|g" \
-        "$RELEASE_DIR/$CONF_NAME" > "$CONF_DEST"
+    render_conf "$RELEASE_DIR/$CONF_NAME" > "$CONF_DEST"
     chmod 644 "$CONF_DEST"
   fi
 
@@ -560,17 +689,7 @@ do_deploy() {
   fi
 
   if ! "$SUPERVISORCTL" restart "$SVC" >/dev/null 2>&1 && ! "$SUPERVISORCTL" start "$SVC" >/dev/null 2>&1; then
-    echo "[ERROR] 启动 $SVC 失败，诊断信息:" >&2
-    "$SUPERVISORCTL" status "$SVC" 2>&1 | sed 's/^/    /' >&2 || true
-    if "$SUPERVISORCTL" status "$SVC" 2>&1 | grep -q "no such process"; then
-      echo "    ── 根因提示：supervisor 未加载本包配置 ──" >&2
-      echo "    确认主配置含 [include] files = $CONF_D/*.conf；若无，补上后 reread && update" >&2
-    fi
-    for LOGF in /var/log/supervisor/supervisord.log /var/log/supervisord.log; do
-      [ -f "$LOGF" ] && { echo "    ── $LOGF 尾部 ──" >&2; tail -15 "$LOGF" 2>/dev/null | sed 's/^/    /' >&2 || true; break; }
-    done
-    [ -f "$RELEASE_DIR/logs/$APP.log" ] && { echo "    ── 程序日志尾部 ──" >&2; tail -15 "$RELEASE_DIR/logs/$APP.log" | sed 's/^/    /' >&2 || true; }
-    echo "        可回滚: cp $CONF_DEST.bak $CONF_DEST 2>/dev/null; $SUPERVISORCTL update" >&2
+    diagnose_start_failure "supervisorctl restart/start 失败"
     exit 1
   fi
 
@@ -578,10 +697,7 @@ do_deploy() {
   if "$SUPERVISORCTL" status "$SVC" 2>/dev/null | grep -q RUNNING; then
     log "完成。运行数据 logs/、data/ 均在包目录内"
   else
-    echo "[ERROR] $SVC 未进入 RUNNING 状态:" >&2
-    "$SUPERVISORCTL" status "$SVC" 2>&1 | sed 's/^/    /' >&2 || true
-    echo "        详情: $SUPERVISORCTL tail $SVC stderr" >&2
-    exit 1
+    diagnose_start_failure "启动后未进入 RUNNING 状态"
   fi
 }
 
