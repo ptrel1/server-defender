@@ -11,6 +11,19 @@ service      = "psup-server-defender"
 conf         = "server-defender.conf"
 script       = "deploy.sh"
 user_default = "root"
+
+# ── 部署身份（三选一，**严格互斥**；协议 §3.4.2）──
+#   root : 必须 root 执行；服务以 root 运行
+#   本项目声明 root —— 安全防护服务需执行特权系统命令：
+#     iptables -A INPUT/OUTPUT -j DROP（封禁 IP，需 CAP_NET_ADMIN）
+#     systemctl / pacman / dpkg 查询（开机项审计）
+#   故运行身份必须 root。部署方式：sudo -i 后再执行 ./deploy.sh
+deploy_as = "root"
+
+# ── 运行所需权限（部署者据此预配；脚本据此校验）──
+run_as_root = true
+run_groups  = []
+run_paths   = []
 port         = 8899
 requires     = ["supervisor"]
 entry        = "bin/server-defender"

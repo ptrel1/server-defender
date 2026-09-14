@@ -20,7 +20,18 @@ SCRIPT_VERSION="1.0.0"
 APP="server-defender"
 BIN="server-defender"          # 运行载体文件名（可与 app 名不同，如 postsup/psupd）
 RUN_USER="root"
+# ── 契约声明的部署身份与运行权限（由 psupd capsule init 从 capsule.toml 注入）──
+# deploy_as: root | sudo | user —— **三选一，严格互斥**（协议 §3.4.2）
+DEPLOY_AS="root"
+RUN_AS_ROOT="true"           # true/false
+RUN_GROUPS=""             # 空格分隔的组名（空=无要求）
+RUN_PATHS=""               # 空格分隔的路径（空=无要求）
+
 PACK_ONLY=0
+# 安全边界：默认保守（不动系统资源）。见协议 §3.4.2
+CREATE_USER=0   # --create-user 才允许 useradd
+FIX_INCLUDE=0   # --fix-include 才允许改 supervisor 主配置
+DRY_RUN=0       # --dry-run 只打印计划，不落盘
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -29,7 +40,13 @@ while [ $# -gt 0 ]; do
     --pack)    PACK_ONLY=1; shift ;;
     --version) echo "$APP 部署脚本 v$SCRIPT_VERSION"; exit 0 ;;
     --user)    RUN_USER="${2:?--user 需要参数,如: --user a1}"; shift 2 ;;
-    *) echo "[ERROR] 未知参数: $1（支持 --pack / --user <用户> / --version）" >&2; exit 1 ;;
+    # 安全边界开关（协议 §3.4.2）：默认**不动系统级资源**，需显式开启
+    --create-user)  CREATE_USER=1; shift ;;
+    --fix-include)  FIX_INCLUDE=1; shift ;;
+    --dry-run)      DRY_RUN=1; shift ;;
+    *) echo "[ERROR] 未知参数: $1" >&2
+       echo "        支持: --pack / --user <用户> / --create-user / --fix-include / --dry-run / --version" >&2
+       exit 1 ;;
   esac
 done
 
@@ -97,6 +114,84 @@ else
   exit 1
 fi
 
+# ══════════════════════════════════════════════════════════════════
+# ── 部署身份校验（协议 §3.4.2）：三类**严格互斥**，用错即拒 ──
+# ══════════════════════════════════════════════════════════════════
+# 为什么要分类：部署"用什么权限跑"与"服务以谁的身份运行"必须明确，
+# 不能靠脚本猜。契约用 deploy_as 声明唯一允许的执行身份。
+#
+#   执行身份判定（互斥）：
+#     root  : euid==0 且 $SUDO_USER 为空     （root 直接登录执行）
+#     sudo  : $SUDO_USER 非空                （普通用户 sudo 借权限）
+#     user  : euid!=0 且无 $SUDO_USER        （纯普通用户）
+EUID_NOW="$(id -u)"
+ACTUAL_AS=""
+if [ "$EUID_NOW" -eq 0 ] && [ -z "${SUDO_USER:-}" ]; then
+  ACTUAL_AS="root"
+elif [ -n "${SUDO_USER:-}" ]; then
+  ACTUAL_AS="sudo"
+elif [ "$EUID_NOW" -ne 0 ]; then
+  ACTUAL_AS="user"
+fi
+
+if [ -z "$DEPLOY_AS" ]; then
+  echo "[ERROR] 契约缺少 deploy_as（应为 root | sudo | user）" >&2
+  echo "        请在 capsule.toml 的 [deploy] 段显式声明部署身份。" >&2
+  exit 1
+fi
+
+if [ "$ACTUAL_AS" != "$DEPLOY_AS" ]; then
+  echo "[ERROR] 部署身份不匹配（三类严格互斥）" >&2
+  echo "        契约要求: $DEPLOY_AS" >&2
+  echo "        当前实际: $ACTUAL_AS（$(id -un)${SUDO_USER:+ ；SUDO_USER=$SUDO_USER}）" >&2
+  echo "" >&2
+  case "$DEPLOY_AS" in
+    root) echo "        本服务需以 root 运行（如执行 iptables、管理 supervisord）。" >&2
+          echo "        请用 root 账户直接执行：sudo -i 后再运行本脚本。" >&2 ;;
+    sudo) echo "        请用普通用户加 sudo 执行：sudo ./deploy.sh" >&2 ;;
+    user) echo "        请用普通用户直接执行：./deploy.sh（不要用 sudo）" >&2
+          echo "        注意：本类要求目标机已预配 supervisor 配置目录的写权限" >&2
+          echo "        （一次性执行，例：sudo setfacl -m u:$(id -un):rwx <conf.d 目录>）" >&2 ;;
+  esac
+  exit 1
+fi
+
+case "$ACTUAL_AS" in
+  root) log "部署身份: root（服务将以 root 运行）" ;;
+  sudo) log "部署身份: sudo（服务将以 $SUDO_USER 运行）" ;;
+  user) log "部署身份: user（服务将以 $(id -un) 运行）" ;;
+esac
+
+# 服务运行身份与声明一致性（run_as_root 与 deploy_as 必须自洽）
+if [ "$RUN_AS_ROOT" = "true" ] && [ "$ACTUAL_AS" != "root" ]; then
+  echo "[ERROR] 契约声明 run_as_root=true，但部署身份是 $ACTUAL_AS（服务无法以 root 运行）" >&2
+  exit 1
+fi
+if [ "$RUN_AS_ROOT" != "true" ] && [ "$ACTUAL_AS" = "root" ]; then
+  echo "[ERROR] 契约声明 run_as_root=false，但部署身份是 root（服务将以 root 运行，与声明矛盾）" >&2
+  exit 1
+fi
+
+# ── 路径安全校验（协议 §3.4.1 红线）──
+# 为什么必须有：脚本含 `chown -R "$RUN_USER" "$RELEASE_DIR"`。
+# 若 RELEASE_DIR 落在系统目录（尤其 `/`），会递归改写整机属主 —— 灾难性且不可逆。
+# 另：CONF_NAME 来自包内契约，若不可信可写成 `../../supervisord.conf` 实现路径穿越写任意文件。
+case "$RELEASE_DIR" in
+  /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|/boot|/boot/*|/var|/var/*|/home|/home/*|/root|/root/*|/opt|/opt/*|/main)
+    echo "[ERROR] 部署目录落在系统敏感路径，拒绝执行: $RELEASE_DIR" >&2
+    echo "        请把胶囊放到独立目录（如 /main/app/<app>/），目录名建议与服务名一致。" >&2
+    exit 1
+    ;;
+esac
+# 契约里的 conf 必须是**纯文件名**（禁含 / 与 ..）——防路径穿越写任意文件
+case "$CONF_NAME" in
+  */*|.|..)
+    echo "[ERROR] 契约 deploy.conf 必须是纯文件名（不含 / ），实际: $CONF_NAME" >&2
+    echo "        这可能是被篡改的契约；请核对包内 capsule.toml。" >&2
+    exit 1
+    ;;
+esac
+
 # ── 平台自动挑选(离线多平台态):uname → bin/<os>-<arch>/server-defender ──
 # 设计纪律:未命中时**必须报错并列出包内已有平台**,绝不「随便挑一个」——
 #          宁可中止,不可把错误平台的二进制部署上去(会 Exec format error)。
@@ -143,6 +238,24 @@ log "$APP 部署脚本 v$SCRIPT_VERSION（模式: $MODE）${BIN_PATH:+ | 载体:
 
 # ── 打包（仅源码态；供开发机产出胶囊）──
 do_pack() {
+  # ⚠️ 变量顺序红线：源码根与构建参数必须**先定义后使用**。
+  # 实踩：曾把 SRC_ROOT/CMD_PKG/LDFLAGS 的定义放在使用之后 →
+  # `set -u` 下报 "SRC_ROOT: 未绑定的变量"，**源码打包态完全不可用**；
+  # 而离线部署态走另一分支，测不出来，只有真跑 --pack 才暴露。
+  local SRC_ROOT
+  SRC_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+  local CMD_PKG LDFLAGS_TPL LDFLAGS VER
+  CMD_PKG="$(grep -m1 -E '^[[:space:]]*cmd[[:space:]]*=' "$SRC_ROOT/capsule.toml" 2>/dev/null \
+             | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//' || true)"
+  LDFLAGS_TPL="$(grep -m1 -E '^[[:space:]]*ldflags[[:space:]]*=' "$SRC_ROOT/capsule.toml" 2>/dev/null \
+             | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//' || true)"
+  VER="$(grep -m1 -E '^[[:space:]]*version[[:space:]]*=' "$SRC_ROOT/capsule.toml" 2>/dev/null \
+        | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//' || true)"
+  [ -n "$CMD_PKG" ] || CMD_PKG="./cmd/$APP"
+  [ -n "$LDFLAGS_TPL" ] || LDFLAGS_TPL='-s -w -X main.version={version}'
+  LDFLAGS="$(printf '%s' "$LDFLAGS_TPL" | sed -e "s|{version}|${VER}|g" -e "s|{bin}|${BIN}|g")"
+
+  [ -f "$SRC_ROOT/capsule.toml" ] || { echo "[ERROR] 源码根未找到 capsule.toml: $SRC_ROOT" >&2; exit 1; }
   mkdir -p "$RELEASE_DIR"
   if ! command -v go >/dev/null 2>&1; then
     [ -f "$RELEASE_DIR/$BIN" ] || { echo "[ERROR] 未安装 go 且 release 内无已有 $BIN，无法打包" >&2; exit 1; }
@@ -169,20 +282,6 @@ do_pack() {
   for d in web static; do
     [ -d "$SRC_ROOT/$d" ] && { rm -rf "$RELEASE_DIR/$d"; cp -r "$SRC_ROOT/$d" "$RELEASE_DIR/$d"; }
   done
-  # 构建入口与 ldflags 从契约读取（各项目 cmd 目录与版本注入路径不一：
-  # postsup 是 cmd/psupd + -X main.version；buka-wms 是 cmd/buka-wms + 其 internal/version.Version）
-  local CMD_PKG LDFLAGS_TPL LDFLAGS
-  CMD_PKG="$(grep -m1 -E '^[[:space:]]*cmd[[:space:]]*=' "$SRC_ROOT/capsule.toml" 2>/dev/null \
-             | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//')"
-  LDFLAGS_TPL="$(grep -m1 -E '^[[:space:]]*ldflags[[:space:]]*=' "$SRC_ROOT/capsule.toml" 2>/dev/null \
-             | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//')"
-  [ -n "$CMD_PKG" ] || CMD_PKG="./cmd/$APP"
-  [ -n "$LDFLAGS_TPL" ] || LDFLAGS_TPL='-s -w -X main.version={version}'
-  local VER
-  VER="$(grep -m1 -E '^[[:space:]]*version[[:space:]]*=' "$SRC_ROOT/capsule.toml" 2>/dev/null \
-        | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//')"
-  LDFLAGS="$(printf '%s' "$LDFLAGS_TPL" | sed -e "s|{version}|${VER}|g" -e "s|{bin}|${BIN}|g")"
-
   # 脱敏配置模板（绝不拷真实配置）
   # 脱敏配置模板：路径**从契约读取**（各项目命名不一：ops.toml / env.toml / config.toml），
   # 统一复制为包内 config.template.toml（与 capsule-build.sh 的产出命名一致）。
@@ -276,9 +375,18 @@ do_deploy() {
       fi
     fi
     if [ -z "$TARGET_DIR" ]; then
+      # 协议 §3.4.2：修改 supervisor **主配置**属系统级改动 —— 默认只提示，
+      # 需显式 --fix-include 才动（目标机可能已有既有组织约定）。
+      if [ "$FIX_INCLUDE" -ne 1 ]; then
+        echo "[ERROR] 主配置 $SUP_CONF 未配置 [include]，本包配置不会被加载。" >&2
+        echo "        请手动补入以下内容后重跑（或加 --fix-include 让脚本自动补）:" >&2
+        echo "            [include]" >&2
+        echo "            files = $CONF_D/*.conf" >&2
+        exit 1
+      fi
       if printf '\n[include]\nfiles = %s/*.conf\n' "$CONF_D" >> "$SUP_CONF" 2>/dev/null; then
         TARGET_DIR="$CONF_D"
-        log "主配置无 [include]，已补入 -> $CONF_D/*.conf（不影响已有服务）"
+        log "主配置无 [include]，已按 --fix-include 补入 -> $CONF_D/*.conf"
       else
         echo "[ERROR] 无法写入主配置 $SUP_CONF；请手动补入 [include] files = $CONF_D/*.conf" >&2
         exit 1
@@ -294,9 +402,17 @@ do_deploy() {
 
   # 运行用户处理：缺失才创建；已存在则不动账号，仅提示不符项
   if ! id "$RUN_USER" >/dev/null 2>&1; then
-    log "运行用户 $RUN_USER 不存在，自动创建"
+    if [ "$CREATE_USER" -ne 1 ]; then
+      # 协议 §3.4.2：默认**不创建系统账号**（改系统账户属越界行为）——
+      # 报错并给出可复制命令，由运维决定；需自动建时显式加 --create-user
+      echo "[ERROR] 运行用户 $RUN_USER 不存在。" >&2
+      echo "        二选一：① 指定已有用户:  --user <已有用户>" >&2
+      echo "                ② 允许脚本创建:  --create-user（将执行 useradd -r -m -s /bin/bash $RUN_USER）" >&2
+      exit 1
+    fi
+    log "运行用户 $RUN_USER 不存在，按 --create-user 创建"
     useradd -r -m -s /bin/bash "$RUN_USER" 2>/dev/null \
-      || { echo "[ERROR] 创建用户 $RUN_USER 失败（需 root；或 --user <已有用户>）" >&2; exit 1; }
+      || { echo "[ERROR] 创建用户 $RUN_USER 失败（需 root）" >&2; exit 1; }
     getent group supervisor >/dev/null 2>&1 && usermod -aG supervisor "$RUN_USER" 2>/dev/null \
       || warn "未能加入 supervisor 组，服务管理功能可能受限"
   else
@@ -304,7 +420,58 @@ do_deploy() {
       || warn "$RUN_USER 不在 supervisor 组，服务管理功能可能受限"
   fi
 
+  # ── 运行权限校验（协议 §3.4.2）：契约声明的 run_groups / run_paths 必须满足 ──
+  # 目的：把"这软件运行需要什么"从口头约定变成**部署时校验**，避免"装上了但跑不起来"。
+  local _miss=0
+  for g in $RUN_GROUPS; do
+    [ -z "$g" ] && continue
+    if id -nG "$RUN_USER" 2>/dev/null | tr ' ' '\n' | grep -qx "$g"; then
+      log "运行权限: $RUN_USER 已在组 $g ✓"
+    else
+      warn "运行权限缺失: $RUN_USER 不在组 $g（本服务需要该组权限）"
+      echo "        修复: sudo usermod -aG $g $RUN_USER  然后重启服务" >&2
+      _miss=1
+    fi
+  done
+  for pth in $RUN_PATHS; do
+    [ -z "$pth" ] && continue
+    if [ -r "$pth" ] 2>/dev/null; then
+      log "运行权限: 路径 $pth 可读 ✓"
+    else
+      warn "运行权限缺失: 路径 $pth 不可读（本服务需要访问它）"
+      echo "        修复: 确认运行用户 $RUN_USER 对该路径有读权限（如加入 adm 组）" >&2
+      _miss=1
+    fi
+  done
+  if [ "$_miss" -eq 1 ]; then
+    warn "存在运行权限缺口（见上）。若确认无碍可继续；否则修复后重启服务。"
+  fi
+
   # 包目录属主与写权限：psupd 首启需写配置/数据，属主必须归运行用户
+
+  # ── dry-run 预检（协议 §3.4.6）：到这里已做完所有**只读**探测与校验，
+  #    下一步就要产生副作用（chown/写配置/useradd）。故在此打印计划并退出，一步不动。
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo ""
+    echo "════════ dry-run 预检结果（未做任何改动）════════"
+    echo "  模式        : $MODE"
+    echo "  部署目录    : $RELEASE_DIR"
+    echo "  运行载体    : ${BIN_PATH:-（源码态，构建后生成）}"
+    echo "  运行用户    : $RUN_USER"
+    echo "  服务名      : $SVC"
+    echo "  配置文件名  : $CONF_NAME"
+    echo "  supervisor 目录: ${TARGET_DIR:-（待探测）}"
+    echo ""
+    echo "  将要执行（如去掉 --dry-run）："
+    echo "    1. 属主归一: chown -R $RUN_USER $RELEASE_DIR"
+    [ "$CREATE_USER" -eq 1 ] && echo "    2. 创建用户: useradd -r -m -s /bin/bash $RUN_USER" || echo "    2. 不创建用户（未加 --create-user；用户不存在则报错退出）"
+    echo "    3. 写配置  : $TARGET_DIR/$CONF_NAME（已存在则先备份为 .bak）"
+    [ "$FIX_INCLUDE" -eq 1 ] && echo "    4. 主配置   : 必要时补 [include]（--fix-include 已开启）" || echo "    4. 主配置   : 不动（未加 --fix-include）"
+    echo "    5. 加载服务 : supervisorctl reread + update $SVC（仅本服务）"
+    echo "    6. 启动     : supervisorctl restart|start $SVC"
+    echo "═══════════════════════════════════════════════"
+    exit 0
+  fi
   # （实踩：目录不可写 → 首启即退 BACKOFF）——归一后仍不可写则硬中止，绝不带病部署
   if chown -R "$RUN_USER:$RUN_USER" "$RELEASE_DIR" 2>/dev/null \
      || chown -R "$RUN_USER" "$RELEASE_DIR" 2>/dev/null \
@@ -344,7 +511,36 @@ do_deploy() {
     SKIP_CONF_WRITE=1
   fi
 
+  # ── 无条件备份（协议 §3.4.4）：只要目标 conf 已存在，写之前一律先备份 ──
+  # 反例（实踩）：备份逻辑曾只写在"含凭据"分支里 → 无凭据的同名 conf 被**静默覆盖**，
+  # 用户既没备份也不知道被改了。
+  if [ -f "$CONF_DEST" ] && [ "${SKIP_CONF_WRITE:-0}" -eq 0 ]; then
+    if cp "$CONF_DEST" "$CONF_DEST.bak" 2>/dev/null; then
+      log "已备份原配置 -> $CONF_DEST.bak"
+    else
+      warn "无法备份 $CONF_DEST（将继续，但请自行确认可回滚）"
+    fi
+  fi
+
   if [ "${SKIP_CONF_WRITE:-0}" -eq 0 ]; then
+    # 写权限预检（协议 §3.4.2）：user 类要求目标机**已预配** conf 目录写权限。
+    # 若直接写会报裸 shell 错误（"权限不够"），对用户毫无指引 —— 故先友好检测。
+    local CONF_DIR_W
+    CONF_DIR_W="$(dirname "$CONF_DEST")"
+    if ! { [ -w "$CONF_DIR_W" ] || [ -w "$CONF_DEST" ]; }; then
+      echo "[ERROR] 无权限写入 supervisor 配置: $CONF_DEST" >&2
+      case "$DEPLOY_AS" in
+        user)
+          echo "        本服务声明 deploy_as=user（纯普通用户部署），要求目标机预先配好写权限。" >&2
+          echo "        一次性预配（管理员执行，之后普通用户可免 sudo 部署）:" >&2
+          echo "            sudo setfacl -m u:$(id -un):rwx $CONF_DIR_W" >&2
+          echo "        或改用 sudo 部署（把契约改为 deploy_as = \"sudo\"）。" >&2
+          ;;
+        sudo) echo "        请用 sudo 执行: sudo ./deploy.sh" >&2 ;;
+        root) echo "        请用 root 执行本脚本。" >&2 ;;
+      esac
+      exit 1
+    fi
     log "写入 supervisor 配置 -> $CONF_DEST"
     sed -e "s|@DIR@|$RELEASE_DIR|g" \
         -e "s|@USER@|$RUN_USER|g" \
@@ -353,10 +549,30 @@ do_deploy() {
     chmod 644 "$CONF_DEST"
   fi
 
+  # ── 非侵入加载（协议 §3.4.3）：只操作**本服务**，不触碰同机其他服务 ──
+  # 为什么：`supervisorctl update`（无参数）是**全局**操作，会连带处理其他服务的
+  # 新增/移除/重启 —— 在已有其他服务的目标机上可能造成意外中断。
+  # `update <name>` 是 supervisor 原生用法，只处理该 program。
   # reread/update 输出透出（不吞）：available/added/错误信息对诊断至关重要
-  "$SUPERVISORCTL" reread || {
-    echo "[ERROR] supervisorctl reread 失败；最常见根因：主配置未 include $CONF_D" >&2; exit 1; }
-  "$SUPERVISORCTL" update || { echo "[ERROR] supervisorctl update 失败" >&2; exit 1; }
+  local REREAD_OUT
+  if ! REREAD_OUT="$("$SUPERVISORCTL" reread 2>&1)"; then
+    echo "$REREAD_OUT" | sed 's/^/    /' >&2
+    echo "[ERROR] supervisorctl reread 失败；最常见根因：主配置未 include $CONF_D" >&2
+    exit 1
+  fi
+  echo "$REREAD_OUT" | sed 's/^/    /'
+  if echo "$REREAD_OUT" | grep -qF "$SVC"; then
+    log "检测到本服务配置变化 → update $SVC（仅本服务，不影响其他）"
+    "$SUPERVISORCTL" update "$SVC" || { echo "[ERROR] supervisorctl update $SVC 失败" >&2; exit 1; }
+  else
+    # 无变化时：若 program 尚未加载（首次部署但 reread 未提示），仍尝试 update <SVC>
+    if "$SUPERVISORCTL" status "$SVC" >/dev/null 2>&1; then
+      log "配置无变化且服务已加载 → 跳过 update"
+    else
+      log "服务尚未加载 → update $SVC（仅本服务）"
+      "$SUPERVISORCTL" update "$SVC" 2>/dev/null || true
+    fi
+  fi
 
   if ! "$SUPERVISORCTL" restart "$SVC" >/dev/null 2>&1 && ! "$SUPERVISORCTL" start "$SVC" >/dev/null 2>&1; then
     echo "[ERROR] 启动 $SVC 失败，诊断信息:" >&2
