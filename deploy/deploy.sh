@@ -322,7 +322,7 @@ do_deploy() {
   # 注意：include 目录判断必须**路径精确比较**，禁子串匹配——
   #      /main/app/supervisor/conf.d 同样含 "conf.d" 子串却不是默认目录。
   #      INI 同名 key 后者覆盖，故 files 只解析**最后一行**。
-  local SUP_CONF="" INC_LINE="" TARGET_DIR="" INC_DIR="" p
+  local SUP_CONF="" INC_LINE="" TARGET_DIR="" INC_DIR="" p SUP_CONF_BAK=""
   SUP_CONF="$(ps -eo args 2>/dev/null | grep '[s]upervisord' | grep -oE '\-c[= ]+[^ ]+' | head -1 | sed -E 's/^-c[= ]+//')"
   if [ -z "$SUP_CONF" ]; then
     for p in /etc/supervisor/supervisord.conf /etc/supervisord.conf /etc/supervisor/supervisor.conf; do
@@ -331,7 +331,7 @@ do_deploy() {
   fi
   if [ -n "$SUP_CONF" ] && [ -f "$SUP_CONF" ]; then
     log "supervisor 主配置: $SUP_CONF"
-    INC_LINE="$(sed -n '/^\[include\]/,/^\[/p' "$SUP_CONF" | grep -E '^[[:space:]]*files?[[:space:]]*=' | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//')"
+    INC_LINE="$(sed -n '/^\[include\]/,/^\[/p' "$SUP_CONF" | grep -E '^[[:space:]]*files?[[:space:]]*=' | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//' || true)"
     if [ -n "$INC_LINE" ]; then
       log "include files: $INC_LINE"
       INC_DIR="$(dirname "$(echo "$INC_LINE" | awk '{print $1}')")"
@@ -384,9 +384,16 @@ do_deploy() {
         echo "            files = $CONF_D/*.conf" >&2
         exit 1
       fi
+      # 改前备份：append [include] 是**语义级**改动（INI 重名 section 后者覆盖），
+      # 一旦主配置本有 include 而解析失配，原有目录会被顶掉 → 其他服务集体消失。
+      SUP_CONF_BAK="$SUP_CONF.bak-$(date +%Y%m%d-%H%M%S)"
+      cp "$SUP_CONF" "$SUP_CONF_BAK" 2>/dev/null \
+        || { echo "[ERROR] 无法备份主配置 $SUP_CONF，拒绝修改（--fix-include 已开启）" >&2; exit 1; }
+      log "已备份主配置 -> $SUP_CONF_BAK"
       if printf '\n[include]\nfiles = %s/*.conf\n' "$CONF_D" >> "$SUP_CONF" 2>/dev/null; then
         TARGET_DIR="$CONF_D"
         log "主配置无 [include]，已按 --fix-include 补入 -> $CONF_D/*.conf"
+        log "如需回滚: cp $SUP_CONF_BAK $SUP_CONF"
       else
         echo "[ERROR] 无法写入主配置 $SUP_CONF；请手动补入 [include] files = $CONF_D/*.conf" >&2
         exit 1
