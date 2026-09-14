@@ -100,6 +100,20 @@ if [ -z "$PLATFORMS" ]; then
 fi
 
 OUT_ROOT="dist/capsule/${APP}-${VERSION}"
+
+# ── 产物版本自检（协议 §3.4.7）：提示"契约版本已变但产物是旧的" ──
+# 为什么需要（20260914 实测事故）：版本号存在多处（源码常量 / capsule.toml /
+# app.toml），改版本后若忘记重建产物 → 下载清单显示新版本、实际目录是旧版本
+# → 点下载报 500（"显示有却下不了"）。此处提前提示，避免带病分发。
+if [ -d dist/capsule ]; then
+  OLD_DIRS="$(ls -1 dist/capsule 2>/dev/null | grep -E "^${APP}-" | grep -v -- "-all-platforms" | grep -v "^${APP}-${VERSION}$" || true)"
+  if [ -n "$OLD_DIRS" ]; then
+    echo "==> [提示] dist/capsule 下存在其他版本的产物："
+    echo "$OLD_DIRS" | sed 's/^/      /'
+    echo "    当前契约版本 ${VERSION} 将构建为 ${APP}-${VERSION}/（旧产物保留，可用 prune 清理）"
+  fi
+fi
+
 echo "==> 构建 ${APP} ${VERSION}（二进制 ${BIN}，cmd 目录 ${CMD_DIR}）"
 
 # ── 平台可编译性预检（只编译不产出，避免"构建到一半才发现某平台不支持"）──
